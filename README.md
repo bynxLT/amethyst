@@ -60,6 +60,40 @@ Trimming is non-destructive: drag an edge back out, or right-click a clip → **
 
 Cut and trimmed edges get tiny automatic fades, so they don't click.
 
+**Magnet snap and grid.** The lanes show alternating bar shading, bar lines, beat lines and (when you zoom in) the snap lines.
+- The **magnet** button next to the tools picks the snap size: none, 1/6 to 1/2 step, step, 1/6 to 1/2 beat, beat or bar.
+- Moving, trimming, cutting and clicking to place the playhead all snap to it.
+- Hold **Shift** to drag freely.
+
+**Clip right-click menu.** It has four sections:
+- **Clip:** Preview (plays only that clip), Muted, Rename, Colour (10 colours or random), Clip properties, Duplicate, Send to track, Show mixer channel, Show file, Delete.
+- **Edit:** Split here / at playhead, Trim to playhead, Restore full length, Move to playhead, **Chop** (every bar, beat, half beat or snap step), **Split at silences**, **Remove silence**.
+- **Sound:** Reverse, Normalize, Pitch (±12 semitones, keeps the length), **Detect tempo**, **Fit to project tempo**.
+- **Fades:** fade in, fade out, reset.
+
+All of these can be undone.
+
+**Knobs and faders.** Right-click any knob or fader for Reset, Copy value, Paste value and Type in value.
+
+**Tempo.** Right-click the BPM display for:
+- **Tap tempo:** click the display on each beat.
+- BPM presets from 80 to 160.
+- Half or double the tempo, round to a whole number, or type in a value.
+
+**Take lanes.** A take that auto-moves to another track keeps playing through the **original track's mixer channel** (its plug-ins, volume and pan), so it never changes level. The track row shows "→ Track 1". A take lane has no mixer strip of its own. To change this, use the row's **...** → **Play through channel**.
+
+**Undo.** Press **Ctrl+Z** to undo and **Ctrl+Y** (or Ctrl+Shift+Z) to redo; on Mac use Cmd. This covers:
+- moving, trimming, cutting and deleting clips
+- enabling or disabling clips
+- recording a take
+- importing audio
+
+Up to 200 steps are kept. Undoing a delete brings the clip back with its trims. Mixer and plug-in changes aren't part of undo yet.
+
+**Waveforms** draw a thin centre line through silent stretches, so quiet parts show a line instead of an empty gap.
+
+**Where new takes go.** If a new take would land on top of an existing take, AMETHYST moves it to the next free track below. It skips armed and muted tracks, and makes a new track if none is free. If that track is completely empty, it also gets the original track's plug-ins, volume and pan, so the take sounds the same. To keep takes on the track you recorded on, open the track's **...** → **Takes** → **Keep new takes on this track**.
+
 **Recording over old takes.** Earlier takes on a track keep playing while you record a new one, so you can hear what you're doubling. Afterwards, overlapping takes are **layered** (you hear all of them) by default. Switch a track to **Newest take on top** from its **...** menu, or by right-clicking its lane.
 
 ## Accounts and AMETHYST Pro
@@ -76,7 +110,7 @@ The 10 built-in AMETHYST effects are **Pro** features. Everything else is free: 
 ### Setting up Supabase
 
 1. Create a Supabase project. Under **Authentication → Providers**, make sure Email is enabled. Leaving "Confirm email" on is fine, because the app handles it.
-2. Open the **SQL editor** and run `supabase/migrations/20261124000000_entitlements.sql`. Then run `supabase/migrations/20261124010000_avatars.sql`, which sets up **profile pictures**: a private `avatars` storage bucket where only active Pro users can upload, enforced by the database. It creates an `entitlements` table with row-level security: users can read their own row but can't change it. It also adds a trigger that gives every new user a free row.
+2. Open the **SQL editor** and run `supabase/migrations/20261124000000_entitlements.sql`. Then run `supabase/migrations/20261124010000_avatars.sql`, which sets up **profile pictures**: a private `avatars` storage bucket where only active Pro users can upload, enforced by the database. Last, run `supabase/migrations/20261124020000_ultra_pro.sql`, which adds the **Ultra Pro** tier (an `is_ultra` flag; Ultra includes everything in Pro). The app still works if this last one hasn't been run yet; nobody is Ultra until it is. It creates an `entitlements` table with row-level security: users can read their own row but can't change it. It also adds a trigger that gives every new user a free row.
 3. Copy `config/supabase.example.json` to `config/supabase.json` (this file is gitignored). Fill in your **Project URL** and **anon / publishable key** from Project Settings → API. Never use the `service_role` key here.
 4. Rebuild. CMake prints `AMETHYST: Supabase configured`.
 
@@ -92,6 +126,31 @@ Later, a payment webhook (for example, a Supabase Edge Function using the servic
 **Note:** the Pro check runs inside the app, so a determined person could patch it out. That's normal for desktop apps. Stronger protection, such as server-signed licences, can come with payments.
 
 To test the account client without the real server: `AMETHYST.exe --account-test <url> <anon-key>` runs sign-in, refresh, entitlement, sign-up and reset against whatever server you point it at.
+
+## AMETHYST TUNE (Ultra Pro)
+
+Real-time vocal pitch correction, available to **Ultra Pro** accounts. It shows an **ULTRA** badge in the plug-in list.
+
+The window has:
+- **Key column:** pick the key. **LEARN** listens to about 8 seconds of singing and sets the key and scale for you.
+- **Dial:** the live waveform, plus the note you're singing and how many cents it's being corrected.
+- **Retune speed:** how fast notes are pulled into tune. 0 ms gives a hard, robotic snap; slower settings sound more natural.
+- **Humanize:** lets small natural wobbles like vibrato through.
+- **Scale:** chromatic, major, minor, harmonic minor, pentatonics or blues.
+- **Scale lock:** freezes the key, so Learn and piano clicks can't change it.
+- **Tracking:** how forgiving pitch detection is with breathy or noisy singing.
+- **Formant:** Auto counters the brightness change when pitch is moved.
+- **Throat:** gives a deeper, fuller character.
+- **Piano:** click keys to choose exactly which notes are allowed (a custom scale). Notes you're singing light up.
+- **Input type:** soprano, alto/tenor, low male or instrument.
+- **Mix**, plus a header with presets, undo/redo, reference pitch (432–444 Hz) and bypass.
+
+To give someone Ultra Pro by hand, run this in the SQL editor:
+
+```sql
+update public.entitlements set is_ultra = true, is_pro = true, plan = 'ultra_manual', pro_until = null
+where user_id = (select id from auth.users where email = 'someone@example.com');
+```
 
 ## Built-in effects
 

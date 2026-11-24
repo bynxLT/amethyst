@@ -22,7 +22,8 @@ public:
         bool ok = false;
         bool networkError = false;
         juce::String error;
-        bool isPro = false;               // already accounts for pro_until
+        bool isPro = false;               // already accounts for pro_until (Ultra counts as Pro)
+        bool isUltra = false;             // Ultra Pro tier
         juce::String plan;
         juce::Time proUntil;              // zero = no expiry
     };
@@ -69,6 +70,8 @@ public:
     bool isSignedIn() const   { return refreshToken.isNotEmpty(); }
     bool isBusy() const       { return busy > 0; }
     bool isPro() const;
+    bool isUltra() const { return isPro() && ultra; }
+    int getTier() const  { return isUltra() ? 2 : (isPro() ? 1 : 0); }   // 0 Free, 1 Pro, 2 Ultra Pro
 
     juce::String getEmail() const  { return email; }
 
@@ -106,7 +109,7 @@ private:
 
     juce::String email, userId, accessToken, refreshToken, status;
     juce::Time accessExpiry;
-    bool pro = false;
+    bool pro = false, ultra = false;
     juce::String plan;
     juce::Time proUntil, lastVerified;
     int busy = 0;

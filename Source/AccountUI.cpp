@@ -255,7 +255,7 @@ void AccountPanel::paint (juce::Graphics& g)
         g.drawRoundedRectangle (badge.reduced (0.5f), 12.0f, 1.0f);
         g.setColour (Theme::text);
         g.setFont (juce::FontOptions (20.0f, juce::Font::bold));
-        g.drawText (pro ? "PRO" : "FREE", badge.reduced (16.0f, 0.0f).toNearestInt(), juce::Justification::centredLeft);
+        g.drawText (account.isUltra() ? "ULTRA PRO" : (pro ? "PRO" : "FREE"), badge.reduced (16.0f, 0.0f).toNearestInt(), juce::Justification::centredLeft);
         g.setColour (Theme::textDim);
         g.setFont (juce::FontOptions (12.5f));
         g.drawText (account.getPlanText(), badge.reduced (16.0f, 0.0f).toNearestInt(), juce::Justification::centredRight, true);
@@ -315,11 +315,12 @@ void AccountPanel::resized()
 }
 
 //==============================================================================
-ProPrompt::ProPrompt (Account& a, juce::String featureName, std::function<void()> open)
-    : account (a), feature (std::move (featureName)), openAccount (std::move (open))
+ProPrompt::ProPrompt (Account& a, juce::String featureName, int requiredTier, std::function<void()> open)
+    : account (a), feature (std::move (featureName)), tier (requiredTier), openAccount (std::move (open))
 {
     const bool signedIn = account.isSignedIn();
-    primaryBtn.setButtonText (! signedIn ? "Sign in / Create account" : "Get Pro (coming soon)");
+    primaryBtn.setButtonText (! signedIn ? "Sign in / Create account"
+                                         : (tier >= 2 ? "Get Ultra Pro (coming soon)" : "Get Pro (coming soon)"));
     primaryBtn.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
     primaryBtn.setToggleState (true, juce::dontSendNotification);
     primaryBtn.onClick = [this]
@@ -335,11 +336,11 @@ ProPrompt::ProPrompt (Account& a, juce::String featureName, std::function<void()
     setSize (440, 340);
 }
 
-void ProPrompt::show (Account& account, const juce::String& featureName, juce::Component* centreAround, std::function<void()> openAccount)
+void ProPrompt::show (Account& account, const juce::String& featureName, int requiredTier, juce::Component* centreAround, std::function<void()> openAccount)
 {
     juce::DialogWindow::LaunchOptions o;
-    o.content.setOwned (new ProPrompt (account, featureName, std::move (openAccount)));
-    o.dialogTitle = "AMETHYST Pro";
+    o.content.setOwned (new ProPrompt (account, featureName, requiredTier, std::move (openAccount)));
+    o.dialogTitle = requiredTier >= 2 ? "AMETHYST Ultra Pro" : "AMETHYST Pro";
     o.dialogBackgroundColour = Theme::windowBg;
     o.useNativeTitleBar = true;
     o.resizable = false;
@@ -363,18 +364,25 @@ void ProPrompt::paint (juce::Graphics& g)
     head.removeFromLeft (10);
     g.setColour (Theme::text);
     g.setFont (juce::FontOptions (20.0f, juce::Font::bold));
-    g.drawText ("Unlock with Pro", head, juce::Justification::centredLeft);
+    const bool ultraNeeded = tier >= 2;
+    g.drawText (ultraNeeded ? "Unlock with Ultra Pro" : "Unlock with Pro", head, juce::Justification::centredLeft);
 
     r.removeFromTop (12);
     g.setColour (Theme::text);
     g.setFont (juce::FontOptions (14.5f));
-    g.drawFittedText (feature + " is part of AMETHYST Pro.", r.removeFromTop (24), juce::Justification::left, 1);
+    g.drawFittedText (feature + (ultraNeeded ? " is part of AMETHYST Ultra Pro." : " is part of AMETHYST Pro."),
+                      r.removeFromTop (24), juce::Justification::left, 1);
     r.removeFromTop (8);
     g.setColour (Theme::textDim);
     g.setFont (juce::FontOptions (13.0f));
-    g.drawFittedText ("- " + proFeatures.joinIntoString ("\n- "), r.removeFromTop (84), juce::Justification::topLeft, 6);
+    if (ultraNeeded)
+        g.drawFittedText ("- AMETHYST TUNE real-time pitch correction\n- Everything in Pro (all AMETHYST effects, profile picture)\n"
+                          "- Future Ultra-only tools",
+                          r.removeFromTop (84), juce::Justification::topLeft, 6);
+    else
+        g.drawFittedText ("- " + proFeatures.joinIntoString ("\n- "), r.removeFromTop (84), juce::Justification::topLeft, 6);
 
-    if (account.isSignedIn() && ! account.isPro())
+    if (account.isSignedIn() && account.getTier() < tier)
     {
         g.setColour (Theme::accent2);
         g.drawFittedText ("Subscriptions launch soon. Already upgraded? Open your account and click Refresh status.",

@@ -45,4 +45,11 @@ struct ClipSettings
 namespace ClipFx
 {
     juce::AudioBuffer<float> render (const juce::AudioBuffer<float>& source, const ClipSettings&, double sampleRate, double bpm);
+
+    // Estimated tempo of a region (onset-envelope autocorrelation), 70..180 BPM; 0 if unsure.
+    double detectTempo (const juce::AudioBuffer<float>&, int start, int length, double sampleRate);
+
+    // Silent stretches (below thresholdDb for at least minSilenceMs) as [start, end) sample ranges within the region.
+    std::vector<std::pair<int, int>> findSilences (const juce::AudioBuffer<float>&, int start, int length, double sampleRate,
+                                                   float thresholdDb = -45.0f, double minSilenceMs = 200.0);
 }

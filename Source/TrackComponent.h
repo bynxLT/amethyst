@@ -41,6 +41,10 @@ private:
     void syncThumbnails();
     void showClipMenu (std::shared_ptr<AudioClip>, juce::int64 clickSample);
     void showLaneMenu();
+    void handleClipMenu (const std::shared_ptr<AudioClip>&, int result, juce::int64 clickSample, juce::int64 playhead);
+    void showRenameBox (const std::shared_ptr<AudioClip>&);
+    void splitAtSilences (const std::shared_ptr<AudioClip>&, bool removeSilentParts);
+    std::unique_ptr<juce::AlertWindow> renameBox;
     void splitAt (const std::shared_ptr<AudioClip>&, juce::int64 at);
 
     enum class Drag { None, Move, TrimStart, TrimEnd };

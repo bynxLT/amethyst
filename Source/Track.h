@@ -27,6 +27,10 @@ struct AudioClip
 
     ClipSettings settings;                     // message thread only
     int renderGeneration = 0;                  // message thread only
+    juce::String name;                         // display name (empty = file name)
+    juce::Colour colour;                       // transparent = default clip colour
+
+    juce::String getDisplayName() const { return name.isNotEmpty() ? name : file.getFileNameWithoutExtension(); }
 
     juce::int64 getBufferLength() const noexcept { return buffer != nullptr ? buffer->getNumSamples() : 0; }
 
@@ -80,6 +84,11 @@ public:
     std::atomic<float> pan { 0.0f };          // -1 (L) .. +1 (R)
     std::atomic<bool>  mute { false }, solo { false }, armed { false }, monitor { false };
     std::atomic<bool>  layerTakes { true };    // overlapping clips: true = hear all, false = newest on top
+    bool takesToFreeTrack = true;              // message thread: a new take that overlaps moves to the next free track
+
+    // Take lane: when set, this track's clips play through that track's mixer channel
+    // (its plug-ins, fader and pan) instead of its own. Changed only via AudioEngine::setPlayThrough.
+    Track* playThrough = nullptr;
     std::atomic<int>   inputChannel { 0 };     // index into the device's *active* input channels
     std::atomic<bool>  stereoInput { false };
 

@@ -36,7 +36,7 @@ AmethystPlugin::AmethystPlugin (const juce::String& id, const juce::String& disp
                                      .withInput ("Input", juce::AudioChannelSet::stereo(), true)
                                      .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       pluginId (id), name (displayName), category (categoryName), tagline (tag),
-      apvts (*this, nullptr, "AMETHYST_STATE", std::move (layout))
+      apvts (*this, &undoManager, "AMETHYST_STATE", std::move (layout))
 {
     for (auto* p : getParameters())
         if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p))

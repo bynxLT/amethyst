@@ -73,6 +73,7 @@ public:
     bool  getBool (const char* id) const { return params.at (id)->load() > 0.5f; }
 
     const juce::String pluginId, name, category, tagline;
+    juce::UndoManager undoManager;            // parameter undo/redo (used by editors with undo buttons)
     juce::AudioProcessorValueTreeState apvts;
     std::vector<Preset> presets;
     std::vector<Section> sections;

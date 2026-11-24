@@ -1,4 +1,4 @@
-#include "Account.h"
+﻿#include "Account.h"
 
 bool amethystProtect (const void* data, std::size_t size, std::vector<unsigned char>& out, bool encrypt);
 
@@ -174,8 +174,13 @@ SupabaseApi::Session SupabaseApi::refresh (const juce::String& refreshToken) con
 SupabaseApi::Entitlement SupabaseApi::fetchEntitlement (const juce::String& accessToken, const juce::String& userId) const
 {
     Entitlement e;
-    const auto r = send ("GET", "/rest/v1/entitlements?select=is_pro,plan,pro_until&user_id=eq." + juce::URL::addEscapeChars (userId, true),
-                         {}, accessToken);
+    const auto userFilter = "&user_id=eq." + juce::URL::addEscapeChars (userId, true);
+    auto r = send ("GET", "/rest/v1/entitlements?select=is_pro,is_ultra,plan,pro_until" + userFilter, {}, accessToken);
+
+    // Projects that haven't run the Ultra Pro migration yet don't have is_ultra - ask without it.
+    if (r.status == 400 && errorText (r).containsIgnoreCase ("is_ultra"))
+        r = send ("GET", "/rest/v1/entitlements?select=is_pro,plan,pro_until" + userFilter, {}, accessToken);
+
     e.networkError = r.networkError.isNotEmpty();
 
     if (r.status != 200 || ! r.json.isArray())
@@ -188,12 +193,15 @@ SupabaseApi::Entitlement SupabaseApi::fetchEntitlement (const juce::String& acce
     if (auto* arr = r.json.getArray(); arr != nullptr && ! arr->isEmpty())
     {
         const auto row = arr->getReference (0);
-        const bool flag = (bool) row.getProperty ("is_pro", false);
+        const bool proFlag = (bool) row.getProperty ("is_pro", false);
+        const bool ultraFlag = (bool) row.getProperty ("is_ultra", false);
         e.plan = row.getProperty ("plan", "free").toString();
         const auto until = row.getProperty ("pro_until", {});
         if (! until.isVoid() && until.toString().isNotEmpty())
             e.proUntil = juce::Time::fromISO8601 (until.toString());
-        e.isPro = flag && (e.proUntil.toMilliseconds() == 0 || e.proUntil > juce::Time::getCurrentTime());
+        const bool current = e.proUntil.toMilliseconds() == 0 || e.proUntil > juce::Time::getCurrentTime();
+        e.isUltra = ultraFlag && current;
+        e.isPro = (proFlag || ultraFlag) && current; // Ultra includes everything in Pro
     }
     return e;
 }
@@ -261,7 +269,10 @@ juce::String Account::getPlanText() const
     if (! isSignedIn())
         return "Not signed in";
     if (isPro())
-        return proUntil.toMilliseconds() != 0 ? "Pro - renews/ends " + proUntil.toString (true, false) : juce::String ("Pro");
+    {
+        const juce::String tierName = isUltra() ? "Ultra Pro" : "Pro";
+        return proUntil.toMilliseconds() != 0 ? tierName + " - renews/ends " + proUntil.toString (true, false) : tierName;
+    }
     if (pro)
         return "Pro (needs to re-check online)";
     return "Free";
@@ -283,6 +294,7 @@ void Account::clearSession()
     refreshToken.clear();
     userId.clear();
     pro = false;
+    ultra = false;
     plan.clear();
     proUntil = {};
     lastVerified = {};
@@ -382,11 +394,12 @@ void Account::checkEntitlement()
             return;
         }
         pro = e.isPro;
+        ultra = e.isUltra;
         plan = e.plan;
         proUntil = e.proUntil;
         lastVerified = juce::Time::getCurrentTime();
         save();
-        status = pro ? "AMETHYST Pro is active. Enjoy!" : "You're on the Free plan.";
+        status = ultra ? "AMETHYST Ultra Pro is active. Enjoy!" : (pro ? "AMETHYST Pro is active. Enjoy!" : "You're on the Free plan.");
         if (pro)
             fetchAvatar();
     });
@@ -562,6 +575,7 @@ void Account::save()
     obj->setProperty ("userId", userId);
     obj->setProperty ("refresh", refreshToken);
     obj->setProperty ("pro", pro);
+    obj->setProperty ("ultra", ultra);
     obj->setProperty ("plan", plan);
     obj->setProperty ("proUntil", proUntil.toMilliseconds());
     obj->setProperty ("verified", lastVerified.toMilliseconds());
@@ -594,6 +608,7 @@ void Account::load()
     userId = v.getProperty ("userId", {}).toString();
     refreshToken = v.getProperty ("refresh", {}).toString();
     pro = (bool) v.getProperty ("pro", false);
+    ultra = (bool) v.getProperty ("ultra", false);
     plan = v.getProperty ("plan", {}).toString();
     proUntil = juce::Time ((juce::int64) v.getProperty ("proUntil", 0));
     lastVerified = juce::Time ((juce::int64) v.getProperty ("verified", 0));

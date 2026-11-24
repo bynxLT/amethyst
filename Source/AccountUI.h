@@ -56,18 +56,19 @@ private:
 class ProPrompt : public juce::Component
 {
 public:
-    ProPrompt (Account&, juce::String featureName, std::function<void()> openAccount);
+    ProPrompt (Account&, juce::String featureName, int requiredTier, std::function<void()> openAccount);
 
     void paint (juce::Graphics&) override;
     void resized() override;
 
-    static void show (Account&, const juce::String& featureName, juce::Component* centreAround, std::function<void()> openAccount);
+    static void show (Account&, const juce::String& featureName, int requiredTier, juce::Component* centreAround, std::function<void()> openAccount);
 
 private:
     void close();
 
     Account& account;
     juce::String feature;
+    int tier = 1;
     std::function<void()> openAccount;
     juce::TextButton primaryBtn, laterBtn { "Not now" };
     juce::Image bg;

@@ -457,6 +457,7 @@ namespace
         { "amethyst.prism", Builtins::makePrism },       { "amethyst.shine", Builtins::makeShine },
         { "amethyst.deesser", Builtins::makeDeEsser },   { "amethyst.warmth", Builtins::makeWarmth },
         { "amethyst.doubler", Builtins::makeDoubler },   { "amethyst.shift", Builtins::makeShift },
+        { "amethyst.tune", Builtins::makeTune },
     };
 }
 

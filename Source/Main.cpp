@@ -1,10 +1,12 @@
-#include <JuceHeader.h>
+﻿#include <JuceHeader.h>
 #include "MainComponent.h"
 #include "GlassLookAndFeel.h"
 #include "Plugins/Builtins.h"
 #include "Account.h"
+#include "EditHistory.h"
 
 bool amethystProtect (const void* data, std::size_t size, std::vector<unsigned char>& out, bool encrypt);
+double amethystTuneTest (double inputHz, int key, int scale, double retuneMs);
 
 class VocalDAWApplication : public juce::JUCEApplication
 {
@@ -110,7 +112,91 @@ public:
             t->layerTakes = false;
             expect (std::abs (renderAt (30000) - 0.25f) < 1.0e-4f, "newest-on-top mode: newest take wins");
 
+            // undo / redo
+            {
+                EditHistory history (eng);
+                const auto before = t->clips.size();
+                auto victim = t->clips.front();
+                const auto victimLen = victim->getLength();
+
+                history.checkpoint ("Delete clip");
+                eng.removeClip (*t, victim.get());
+                expect (t->clips.size() == before - 1, "delete removes the clip");
+                expect (history.undo() && t->clips.size() == before && t->clips.front() == victim && victim->getLength() == victimLen,
+                        "undo brings a deleted clip back with its trim");
+                expect (history.redo() && t->clips.size() == before - 1, "redo deletes it again");
+                history.undo();
+
+                history.checkpoint ("Move clip");
+                const auto oldStart = right->startSample.load();
+                right->startSample = oldStart + 5000;
+                eng.trimClipEnd (*right, right->getEnd() - 3000);
+                expect (history.undo() && right->startSample.load() == oldStart && right->getEnd() == 48000,
+                        "undo restores position and trim together");
+
+                history.checkpoint ("Click");
+                history.discardIfUnchanged();
+                expect (history.nextUndoName() != "Click", "a click with no change isn't an undo step");
+            }
+
+            // where new takes go
+            {
+                auto* t2 = eng.addTrack ("T2");
+                auto* t3 = eng.addTrack ("T3");
+                auto take = makeClip (0.1f, 25000, 4000);   // overlaps clips on T
+                expect (eng.findTrackForTake (t, *take) == t2, "overlapping take goes to the next free track");
+                t2->armed = true;
+                expect (eng.findTrackForTake (t, *take) == t3, "armed tracks are skipped");
+                eng.addClip (*t3, makeClip (0.1f, 26000, 1000));
+                expect (eng.findTrackForTake (t, *take) == nullptr, "no free track = make a new one");
+                auto lonely = makeClip (0.1f, 200000, 4000);
+                expect (eng.findTrackForTake (t, *lonely) == t, "a take with nothing underneath stays put");
+
+                // a take lane plays through its source channel: same fader, so same level
+                auto* lane = eng.addTrack ("Lane");
+                t->volumeDb = -6.0f;
+                lane->volumeDb = 0.0f;
+                eng.setClips (*t, {});
+                eng.setClips (*t2, {}); eng.setClips (*t3, {});
+                eng.addClip (*lane, makeClip (0.5f, 0, 48000));
+                eng.setPlayThrough (*lane, t);
+                renderAt (1000);                               // let the fader smoothing settle
+                const float throughSource = renderAt (1000);
+                expect (std::abs (throughSource - 0.5f * juce::Decibels::decibelsToGain (-6.0f)) < 2.0e-3f,
+                        "take lane uses the source track's fader (no volume jump)");
+                eng.setPlayThrough (*lane, nullptr);
+                renderAt (1000);
+                const float ownChannel = renderAt (1000);
+                expect (std::abs (ownChannel - 0.5f) < 2.0e-3f, "back on its own channel it uses its own fader");
+                t->volumeDb = 0.0f;
+            }
+
             if (fails > 0) { std::printf ("clip editing test FAILED\n"); return 1; }
+        }
+
+        // AMETHYST TUNE: an out-of-tune tone must come out on the right note.
+        {
+            struct Case { double in; int key, scale; double expect; const char* what; };
+            const Case tuneCases[] = {
+                { 431.0, 9, 0, 440.0, "flat A (431 Hz) is pulled up to 440 Hz" },
+                { 451.0, 9, 0, 440.0, "sharp A (451 Hz) is pulled down to 440 Hz" },
+                { 455.0, 0, 1, 440.0, "in C major, a note between A and A# goes to A (A# isn't in the key)" },
+                { 255.0, 0, 0, 261.63, "flat middle C is pulled up to 261.6 Hz" },
+            };
+            int tuneFails = 0;
+            for (auto& c : tuneCases)
+            {
+                const double got = amethystTuneTest (c.in, c.key, c.scale, 0.0);
+                const double cents = got > 0.0 ? 1200.0 * std::log2 (got / c.expect) : 9999.0;
+                const bool ok = std::abs (cents) < 15.0;
+                std::printf ("  [%s] %s  (got %.1f Hz, %+.1f cents)\n", ok ? "ok" : "FAIL", c.what, got, cents);
+                if (! ok) ++tuneFails;
+            }
+            const double untouched = amethystTuneTest (440.0, 9, 0, 0.0);
+            const bool cleanOk = std::abs (1200.0 * std::log2 (untouched / 440.0)) < 5.0;
+            std::printf ("  [%s] an in-tune note passes through unchanged (got %.1f Hz)\n", cleanOk ? "ok" : "FAIL", untouched);
+            if (! cleanOk) ++tuneFails;
+            if (tuneFails > 0) { std::printf ("tune test FAILED\n"); return 1; }
         }
 
         // Built-in effects: every factory preset, stereo noise + a tone, must stay finite and not blow up.
@@ -194,6 +280,15 @@ public:
         auto expired = api.signIn ("lapsed@example.com", "correct-horse");
         auto expEnt = api.fetchEntitlement (expired.accessToken, expired.userId);
         check (expEnt.ok && ! expEnt.isPro, "expired pro_until is not pro", expEnt.proUntil.toISO8601 (true));
+
+        auto ultraUser = api.signIn ("ultra@example.com", "correct-horse");
+        auto ultraEnt = api.fetchEntitlement (ultraUser.accessToken, ultraUser.userId);
+        check (ultraEnt.ok && ultraEnt.isUltra && ultraEnt.isPro, "ultra pro user gets Ultra (and Pro)", ultraEnt.plan);
+        check (ent.ok && ! ent.isUltra, "pro user is not ultra", {});
+
+        auto legacy = api.signIn ("legacy@example.com", "correct-horse");
+        auto legacyEnt = api.fetchEntitlement (legacy.accessToken, legacy.userId);
+        check (legacyEnt.ok && legacyEnt.isPro && ! legacyEnt.isUltra, "works before the Ultra migration is run", legacyEnt.error);
 
         auto noToken = api.fetchEntitlement ("not-a-token", good.userId);
         check (! noToken.ok, "entitlement needs a valid token", noToken.error);

@@ -34,7 +34,10 @@ ClipEditor::ClipEditor (AppContext& c, Track& t, std::shared_ptr<AudioClip> cl)
     {
         if (auto cp = clip.lock())
             if (ctx.engine.isValidChannel (&track))
+            {
+                if (ctx.checkpoint) ctx.checkpoint ("Delete clip");
                 ctx.engine.removeClip (track, cp.get());
+            }
     };
     for (auto* b : { &replaceBtn, &revealBtn, &deleteBtn })
         addAndMakeVisible (b);
@@ -364,6 +367,15 @@ void ClipEditor::paint (juce::Graphics& g)
     {
         auto inner = waveArea.reduced (6, 8);
         const bool on = cp != nullptr && cp->enabled.load();
+
+        const int numCh = juce::jmax (1, thumbnail.getNumChannels()); // centre line through silence
+        g.setColour (Theme::wave.withAlpha (on ? 0.5f : 0.2f));
+        for (int ch = 0; ch < numCh; ++ch)
+        {
+            const float bandH = (float) inner.getHeight() / (float) numCh;
+            g.fillRect (juce::Rectangle<float> ((float) inner.getX(), (float) inner.getY() + bandH * ((float) ch + 0.5f) - 0.5f, (float) inner.getWidth(), 1.0f));
+        }
+
         g.setGradientFill (juce::ColourGradient (Theme::wave.withAlpha (on ? 0.95f : 0.3f), (float) inner.getX(), (float) inner.getY(),
                                                  Theme::accent.withAlpha (on ? 0.9f : 0.3f), (float) inner.getX(), (float) inner.getBottom(), false));
         thumbnail.drawChannels (g, inner, 0.0, thumbnail.getTotalLength(), 1.0f);

@@ -48,7 +48,7 @@ public:
 
     //==== Plug-ins ============================================================
     std::unique_ptr<juce::AudioPluginInstance> createPlugin (const juce::PluginDescription&, juce::String& error);
-    std::function<bool()> isProUnlocked;   // built-in AMETHYST effects require Pro (unset = allowed, e.g. self-tests)
+    std::function<int()> unlockedTier;     // account tier (0 Free, 1 Pro, 2 Ultra); unset = everything allowed (self-tests)
 
     // Puts a plug-in into slot `index`. Returns the old slot (destroy it on the message thread).
     std::unique_ptr<InsertSlot> insertPlugin (Track&, int index, std::unique_ptr<juce::AudioPluginInstance>);
@@ -61,6 +61,24 @@ public:
     std::shared_ptr<AudioClip> loadClip (const juce::File&, juce::int64 startSample);
     void addClip (Track&, std::shared_ptr<AudioClip>);
     std::shared_ptr<AudioClip> removeClip (Track&, const AudioClip*);
+
+    // Whole clip list of a track (for undo). setClips swaps it in under the lock.
+    std::vector<std::shared_ptr<AudioClip>> getClips (const Track& t) const { return t.clips; }
+    void setClips (Track&, std::vector<std::shared_ptr<AudioClip>>);
+
+    // Play one clip on its own from its start (Stop ends the preview).
+    void previewClipSolo (const AudioClip&);
+    bool isPreviewing() const noexcept { return previewClip.load() != nullptr; }
+
+    // Route a take lane through another track's channel (nullptr = its own channel). Never chains.
+    void setPlayThrough (Track& lane, Track* channel);
+
+    // Where should a new take go? Returns `source` if nothing overlaps it there, else the next track
+    // below that's free for the take's time span (not armed / muted), else nullptr (caller adds a track).
+    Track* findTrackForTake (Track* source, const AudioClip& take) const;
+
+    // Takes created by the last stop() after recording (track, clip). Cleared when read.
+    std::vector<std::pair<Track*, std::shared_ptr<AudioClip>>> consumeNewTakes() { return std::exchange (newTakes, {}); }
 
     // Non-destructive editing. Times are timeline samples.
     void trimClipStart (AudioClip&, juce::int64 newStart);   // keeps the end where it is
@@ -97,6 +115,8 @@ private:
     std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> createWavWriter (const juce::File&, int numChannels);
     void ensureScratch (int numSamples);
     void processChannel (Track&, int numSamples);   // inserts + fader/pan + meters on trackBuffer[0..1]
+    void renderClips (Track&, juce::int64 pos, int numSamples);   // adds the track's clips into trackBuffer[0..1]
+    std::atomic<const AudioClip*> previewClip { nullptr };
     template <typename Fn> void forEachChannel (Fn&& fn) { fn (master); for (auto* t : tracks) fn (*t); }
 
     juce::CriticalSection lock;
@@ -121,6 +141,7 @@ private:
     juce::MidiBuffer midiScratch;
 
     void setClipBuffer (AudioClip&, AudioClip::BufferPtr);
+    std::vector<std::pair<Track*, std::shared_ptr<AudioClip>>> newTakes;
     juce::ThreadPool renderPool { 1 };
     std::shared_ptr<int> aliveToken = std::make_shared<int> (0);
     std::atomic<int> pendingRenders { 0 };

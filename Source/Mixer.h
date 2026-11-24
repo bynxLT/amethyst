@@ -1,6 +1,7 @@
 #pragma once
 
 #include "UiHelpers.h"
+#include "Widgets.h"
 
 class MixerView;
 class SlotPanel;
@@ -123,7 +124,7 @@ private:
     float levelL = 0.0f, levelR = 0.0f;
 
     LedButton armLed { Theme::record };
-    juce::Slider panKnob, fader;
+    ValueSlider panKnob { "Pan" }, fader { "Volume" };
     juce::TextButton muteBtn { "M" }, soloBtn { "S" };
     juce::Rectangle<int> meterArea, nameArea;
 };

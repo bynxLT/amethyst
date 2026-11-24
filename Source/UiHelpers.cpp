@@ -1,6 +1,7 @@
 #include "UiHelpers.h"
 #include "PluginWindows.h"
 #include "Presets.h"
+#include "Plugins/Builtins.h"
 
 namespace UiHelpers
 {
@@ -173,11 +174,15 @@ namespace UiHelpers
         if (slot < 0 || slot >= (int) track.inserts.size())
             return false;
 
-        if (desc.pluginFormatName == "AMETHYST" && ctx.isPro && ! ctx.isPro())
+        if (desc.pluginFormatName == "AMETHYST" && ctx.tier)
         {
-            if (ctx.showProPrompt)
-                ctx.showProPrompt (desc.name);
-            return false;
+            const int needed = Builtins::requiredTier (desc.fileOrIdentifier);
+            if (ctx.tier() < needed)
+            {
+                if (ctx.showProPrompt)
+                    ctx.showProPrompt (desc.name, needed);
+                return false;
+            }
         }
 
         juce::String error;

@@ -62,6 +62,7 @@ target_sources(VocalDAW PRIVATE
     Source/Plugins/DynamicsReverb.cpp
     Source/Plugins/TimeEffects.cpp
     Source/Plugins/VocalEffects.cpp
+    Source/Plugins/TunePlugin.cpp
     Source/Account.cpp
     Source/AccountUI.cpp
 )

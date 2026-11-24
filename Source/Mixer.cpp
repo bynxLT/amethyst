@@ -1,6 +1,7 @@
 #include "Mixer.h"
 #include "PluginWindows.h"
 #include "Widgets.h"
+#include "Plugins/Builtins.h"
 
 namespace
 {
@@ -109,11 +110,13 @@ void PluginBrowser::paintListBoxItem (int row, juce::Graphics& g, int width, int
     g.setFont (juce::FontOptions (13.0f, own ? juce::Font::bold : juce::Font::plain));
     g.drawText (d.name, x, 0, width - x - 8, height, juce::Justification::centredLeft, true);
 
-    const bool locked = own && ctx.isPro && ! ctx.isPro();
+    const int needed = own ? Builtins::requiredTier (d.fileOrIdentifier) : 0;
+    const bool locked = own && ctx.tier && ctx.tier() < needed;
     if (locked)
     {
-        // small "PRO" pill with a padlock
-        auto pill = juce::Rectangle<float> ((float) width - 46.0f, (float) height * 0.5f - 8.0f, 40.0f, 16.0f);
+        // small "PRO" / "ULTRA" pill with a padlock
+        const float pillW = needed >= Builtins::tierUltra ? 52.0f : 40.0f;
+        auto pill = juce::Rectangle<float> ((float) width - pillW - 6.0f, (float) height * 0.5f - 8.0f, pillW, 16.0f);
         g.setGradientFill (juce::ColourGradient (Theme::accent.withAlpha (0.55f), pill.getX(), pill.getY(),
                                                  Theme::accent2.withAlpha (0.45f), pill.getRight(), pill.getY(), false));
         g.fillRoundedRectangle (pill, 8.0f);
@@ -122,7 +125,7 @@ void PluginBrowser::paintListBoxItem (int row, juce::Graphics& g, int width, int
         g.fillRoundedRectangle (lock.withTrimmedTop (lock.getHeight() * 0.45f), 1.0f);
         g.drawEllipse (lock.withTrimmedBottom (lock.getHeight() * 0.35f).reduced (1.0f, 0.0f), 1.0f);
         g.setFont (juce::FontOptions (9.5f, juce::Font::bold));
-        g.drawText ("PRO", pill.toNearestInt(), juce::Justification::centred);
+        g.drawText (needed >= Builtins::tierUltra ? "ULTRA" : "PRO", pill.toNearestInt().withTrimmedLeft (8), juce::Justification::centred);
     }
     else
     {
@@ -699,7 +702,11 @@ void MixerView::rebuild()
     stripHolder.addAndMakeVisible (strips.add (new MixerStrip (*this, ctx.engine.getMaster(), 0)));
     int n = 1;
     for (auto* t : ctx.engine.getTracks())
-        stripHolder.addAndMakeVisible (strips.add (new MixerStrip (*this, *t, n++)));
+    {
+        ++n; // keep track numbers matching the track list
+        if (t->playThrough == nullptr) // take lanes have no channel of their own
+            stripHolder.addAndMakeVisible (strips.add (new MixerStrip (*this, *t, n - 1)));
+    }
 
     resized();
     select (previous != nullptr && ctx.engine.isValidChannel (previous) ? previous : &ctx.engine.getMaster());

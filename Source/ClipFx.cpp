@@ -219,6 +219,76 @@ namespace
     }
 }
 
+double ClipFx::detectTempo (const juce::AudioBuffer<float>& buf, int start, int length, double sr)
+{
+    const int hop = juce::jmax (1, (int) (sr * 0.01)); // 10 ms frames -> 100 frames per second
+    const int frames = length / hop;
+    if (frames < 300) // need a few seconds
+        return 0.0;
+
+    std::vector<float> env ((size_t) frames, 0.0f), onset ((size_t) frames, 0.0f);
+    for (int f = 0; f < frames; ++f)
+    {
+        double e = 0.0;
+        for (int c = 0; c < buf.getNumChannels(); ++c)
+        {
+            const float* d = buf.getReadPointer (c, start + f * hop);
+            for (int i = 0; i < hop; ++i)
+                e += d[i] * d[i];
+        }
+        env[(size_t) f] = (float) std::log1p (e * 100.0);
+        if (f > 0)
+            onset[(size_t) f] = juce::jmax (0.0f, env[(size_t) f] - env[(size_t) f - 1]);
+    }
+
+    // autocorrelation over the 70..180 BPM range, with a gentle preference for 90..140
+    double best = 0.0, bestScore = 0.0;
+    for (int lag = 33; lag <= 86; ++lag)
+    {
+        double score = 0.0;
+        for (int f = lag; f < frames; ++f)
+            score += onset[(size_t) f] * onset[(size_t) (f - lag)];
+        const double bpm = 6000.0 / lag;
+        score *= 1.0 - 0.15 * std::abs (bpm - 115.0) / 65.0;
+        if (score > bestScore)
+        {
+            bestScore = score;
+            best = bpm;
+        }
+    }
+    return bestScore > 0.0 ? best : 0.0;
+}
+
+std::vector<std::pair<int, int>> ClipFx::findSilences (const juce::AudioBuffer<float>& buf, int start, int length, double sr,
+                                                        float thresholdDb, double minSilenceMs)
+{
+    std::vector<std::pair<int, int>> spans;
+    const int win = juce::jmax (1, (int) (sr * 0.01));
+    const float thr = juce::Decibels::decibelsToGain (thresholdDb);
+    const int minLen = (int) (sr * minSilenceMs / 1000.0);
+
+    int runStart = -1;
+    for (int pos = 0; pos < length; pos += win)
+    {
+        const int n = juce::jmin (win, length - pos);
+        float peak = 0.0f;
+        for (int c = 0; c < buf.getNumChannels(); ++c)
+            peak = juce::jmax (peak, buf.getMagnitude (c, start + pos, n));
+
+        const bool quiet = peak < thr;
+        if (quiet && runStart < 0)
+            runStart = pos;
+        if ((! quiet || pos + n >= length) && runStart >= 0)
+        {
+            const int runEnd = quiet ? pos + n : pos;
+            if (runEnd - runStart >= minLen)
+                spans.emplace_back (runStart, runEnd);
+            runStart = -1;
+        }
+    }
+    return spans;
+}
+
 juce::AudioBuffer<float> ClipFx::render (const juce::AudioBuffer<float>& source, const ClipSettings& s, double sr, double bpm)
 {
     const int srcLen = source.getNumSamples();

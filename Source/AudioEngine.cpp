@@ -72,6 +72,9 @@ void AudioEngine::removeTrack (Track* t)
         const int idx = tracks.indexOf (t);
         if (idx < 0)
             return;
+        for (auto* other : tracks)        // lanes of a deleted channel go back to their own channel
+            if (other->playThrough == t)
+                other->playThrough = nullptr;
         doomed.reset (tracks.removeAndReturn (idx));
     }
     // plug-ins and buffers are freed here, outside the audio lock
@@ -100,6 +103,7 @@ void AudioEngine::play()
 
 void AudioEngine::stop()
 {
+    previewClip = nullptr;
     std::vector<Track*> recorded;
     std::vector<std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter>> finished;
 
@@ -134,7 +138,81 @@ void AudioEngine::stop()
 
     for (auto* t : recorded)
         if (auto clip = loadClip (t->recordingFile, recordStart - latency))
+        {
+            newTakes.emplace_back (t, clip);
             addClip (*t, std::move (clip));
+        }
+}
+
+Track* AudioEngine::findTrackForTake (Track* source, const AudioClip& take) const
+{
+    const auto s = take.startSample.load(), e = take.getEnd();
+    auto overlaps = [&] (const Track& t)
+    {
+        for (auto& c : t.clips)
+            if (c.get() != &take && c->startSample.load() < e && c->getEnd() > s)
+                return true;
+        return false;
+    };
+
+    if (! overlaps (*source))
+        return source;
+
+    // The take keeps the source channel's sound, so it may only land on one of the source's
+    // take lanes, or on a completely empty track (no clips, no plug-ins, not routed elsewhere).
+    auto* channel = source->playThrough != nullptr ? source->playThrough : source;
+    auto usable = [&] (const Track& t)
+    {
+        if (t.armed.load() || t.mute.load() || overlaps (t))
+            return false;
+        if (t.playThrough == channel)
+            return true;
+        return t.playThrough == nullptr && t.clips.empty() && t.countPlugins() == 0
+               && std::none_of (tracks.begin(), tracks.end(), [&] (const Track* o) { return o->playThrough == &t; });
+    };
+
+    bool below = false;
+    for (auto* t : tracks)
+    {
+        if (t == source) { below = true; continue; }
+        if (below && usable (*t))
+            return t;
+    }
+    return nullptr;
+}
+
+void AudioEngine::setPlayThrough (Track& lane, Track* channel)
+{
+    if (channel == &lane || channel == &master)
+        channel = nullptr;
+    if (channel != nullptr && channel->playThrough != nullptr)
+        channel = channel->playThrough; // never chain lanes
+
+    const juce::ScopedLock sl (lock);
+    lane.playThrough = channel;
+    // anything that was routed into this lane follows it to its new channel
+    for (auto* t : tracks)
+        if (t->playThrough == &lane)
+            t->playThrough = channel;
+}
+
+void AudioEngine::previewClipSolo (const AudioClip& c)
+{
+    if (recording)
+        return;
+    previewClip = &c;
+    position = juce::jmax<juce::int64> (0, c.startSample.load());
+    bounceDone = false;
+    playing = true;
+}
+
+void AudioEngine::setClips (Track& t, std::vector<std::shared_ptr<AudioClip>> clips)
+{
+    {
+        const juce::ScopedLock sl (lock);
+        std::swap (t.clips, clips);
+    }
+    // the old list is released here, outside the audio lock
 }
 
 bool AudioEngine::record()
@@ -238,9 +316,10 @@ std::unique_ptr<juce::AudioPluginInstance> AudioEngine::createPlugin (const juce
 
     if (desc.pluginFormatName == Builtins::formatName)
     {
-        if (isProUnlocked && ! isProUnlocked())
+        const int needed = Builtins::requiredTier (desc.fileOrIdentifier);
+        if (unlockedTier && unlockedTier() < needed)
         {
-            error = "Requires AMETHYST Pro - sign in from the Account button";
+            error = "Requires " + Builtins::tierName (needed) + " - sign in from the Account button";
             return nullptr;
         }
         instance = Builtins::create (desc.fileOrIdentifier);
@@ -584,6 +663,59 @@ void AudioEngine::audioDeviceStopped()
     });
 }
 
+void AudioEngine::renderClips (Track& t, juce::int64 pos, int numSamples)
+{
+    // Layer mode sums overlapping takes; otherwise the newest clip wins.
+    const bool layer = t.layerTakes.load();
+    if (! layer)
+        std::fill (coverage.get(), coverage.get() + numSamples, (juce::uint8) 0);
+    auto* dl = trackBuffer.getWritePointer (0);
+    auto* dr = trackBuffer.getWritePointer (1);
+    const auto* preview = previewClip.load();
+
+    for (auto it = t.clips.rbegin(); it != t.clips.rend(); ++it)
+    {
+        const auto& clip = **it;
+        if (clip.buffer == nullptr || (preview != nullptr ? preview != &clip : ! clip.enabled.load()))
+            continue;
+
+        const auto start = clip.startSample.load();
+        const auto len = clip.getLength();
+        const auto s0 = juce::jmax (pos, start);
+        const auto s1 = juce::jmin (pos + numSamples, start + len);
+        if (s1 <= s0)
+            continue;
+
+        const auto& cb = *clip.buffer;
+        const auto offset = clip.getOffset();
+        const float* srcL = cb.getReadPointer (0);
+        const float* srcR = cb.getReadPointer (cb.getNumChannels() > 1 ? 1 : 0);
+
+        // short fades at the played edges so trims and cuts never click
+        const auto fadeLen = juce::jmax<juce::int64> (1, juce::jmin<juce::int64> (96, len / 2));
+
+        for (auto p = s0; p < s1; ++p)
+        {
+            const int i = (int) (p - pos);
+            if (! layer)
+            {
+                if (coverage[i] != 0)
+                    continue;
+                coverage[i] = 1;
+            }
+
+            const auto rel = p - start;
+            float g = 1.0f;
+            if (rel < fadeLen)            g = (float) rel / (float) fadeLen;
+            if (len - rel <= fadeLen)     g = juce::jmin (g, (float) (len - rel) / (float) fadeLen);
+
+            const auto si = offset + rel;
+            dl[i] += srcL[si] * g;
+            dr[i] += srcR[si] * g;
+        }
+    }
+}
+
 void AudioEngine::processChannel (Track& t, int numSamples)
 {
     // Insert chain
@@ -671,88 +803,62 @@ void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* input, i
         return (idx >= 0 && idx < numInputs) ? input[idx] : nullptr;
     };
 
+    // 1. Record the dry input of every armed track
+    if (isRec)
+    {
+        for (auto* t : tracks)
+        {
+            if (t->recorder == nullptr)
+                continue;
+            const int inCh = t->inputChannel.load();
+            const float* inL = getInput (inCh);
+            const float* inR = t->stereoInput.load() ? getInput (inCh + 1) : inL;
+            const float* chans[2] = { inL != nullptr ? inL : silence.get(), inR != nullptr ? inR : silence.get() };
+            t->recorder->write (chans, numSamples);
+        }
+    }
+
+    // 2. Mix each channel. Take lanes (playThrough set) are summed into their channel *before*
+    //    its plug-ins and fader, so a take sounds the same whichever track row it sits on.
     for (auto* t : tracks)
     {
+        if (t->playThrough != nullptr)
+            continue;
+
         for (int c = 0; c < kMaxChannels; ++c)
             trackBuffer.clear (c, 0, numSamples);
 
-        const int inCh = t->inputChannel.load();
-        const float* inL = getInput (inCh);
-        const float* inR = t->stereoInput.load() ? getInput (inCh + 1) : inL;
-
-        // 1. Record the dry input
-        if (isRec && t->recorder != nullptr)
+        bool soloed = t->solo.load();
+        auto addSource = [&] (Track& src)
         {
-            const float* chans[2] = { inL != nullptr ? inL : silence.get(),
-                                      inR != nullptr ? inR : silence.get() };
-            t->recorder->write (chans, numSamples);
-        }
+            // Clips: existing takes keep playing while recording, so you can sing along.
+            if (isPlay && ! src.clips.empty())
+                renderClips (src, pos, numSamples);
 
-        // 2. Play clips. Existing takes keep playing while this track records a new one,
-        //    so you can sing along to (or double) what's already there.
-        //    Layer mode sums overlapping takes; otherwise the newest clip wins.
-        if (isPlay && ! t->clips.empty())
-        {
-            const bool layer = t->layerTakes.load();
-            if (! layer)
-                std::fill (coverage.get(), coverage.get() + numSamples, (juce::uint8) 0);
-            auto* dl = trackBuffer.getWritePointer (0);
-            auto* dr = trackBuffer.getWritePointer (1);
-
-            for (auto it = t->clips.rbegin(); it != t->clips.rend(); ++it)
+            // Input monitoring (goes through the channel's insert chain so the singer hears the FX)
+            if (src.monitor.load())
             {
-                const auto& clip = **it;
-                if (clip.buffer == nullptr || ! clip.enabled.load())
-                    continue;
-
-                const auto start = clip.startSample.load();
-                const auto len = clip.getLength();
-                const auto s0 = juce::jmax (pos, start);
-                const auto s1 = juce::jmin (pos + numSamples, start + len);
-                if (s1 <= s0)
-                    continue;
-
-                const auto& cb = *clip.buffer;
-                const auto offset = clip.getOffset();
-                const float* srcL = cb.getReadPointer (0);
-                const float* srcR = cb.getReadPointer (cb.getNumChannels() > 1 ? 1 : 0);
-
-                // short fades at the played edges so trims and cuts never click
-                const auto fadeLen = juce::jmax<juce::int64> (1, juce::jmin<juce::int64> (96, len / 2));
-
-                for (auto p = s0; p < s1; ++p)
-                {
-                    const int i = (int) (p - pos);
-                    if (! layer)
-                    {
-                        if (coverage[i] != 0)
-                            continue;
-                        coverage[i] = 1;
-                    }
-
-                    const auto rel = p - start;
-                    float g = 1.0f;
-                    if (rel < fadeLen)            g = (float) rel / (float) fadeLen;
-                    if (len - rel <= fadeLen)     g = juce::jmin (g, (float) (len - rel) / (float) fadeLen);
-
-                    const auto si = offset + rel;
-                    dl[i] += srcL[si] * g;
-                    dr[i] += srcR[si] * g;
-                }
+                const int inCh = src.inputChannel.load();
+                const float* inL = getInput (inCh);
+                const float* inR = src.stereoInput.load() ? getInput (inCh + 1) : inL;
+                if (inL != nullptr) trackBuffer.addFrom (0, 0, inL, numSamples);
+                if (inR != nullptr) trackBuffer.addFrom (1, 0, inR, numSamples);
             }
-        }
+        };
 
-        // 3. Input monitoring (goes through the insert chain so the singer hears the FX)
-        if (t->monitor.load())
+        addSource (*t);
+        for (auto* lane : tracks)
         {
-            if (inL != nullptr) trackBuffer.addFrom (0, 0, inL, numSamples);
-            if (inR != nullptr) trackBuffer.addFrom (1, 0, inR, numSamples);
+            if (lane->playThrough != t || lane->mute.load())
+                continue;
+            soloed = soloed || lane->solo.load();
+            addSource (*lane);
         }
 
-        // 4. Inserts, fader, pan, meters
+        // Inserts, fader, pan, meters
         processChannel (*t, numSamples);
 
-        const bool audible = ! t->mute.load() && (! anySolo || t->solo.load());
+        const bool audible = ! t->mute.load() && (! anySolo || soloed);
         if (audible)
         {
             masterBuffer.addFrom (0, 0, trackBuffer, 0, 0, numSamples);

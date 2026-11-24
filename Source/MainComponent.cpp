@@ -20,6 +20,8 @@ MainComponent::MainComponent()
     ctx.showInMixer = [this] (Track* t) { setMixerVisible (true); mixer.select (t); };
     ctx.showPluginManager = [this] { showPluginManager(); };
     ctx.openClipEditor = [this] (Track* t, std::shared_ptr<AudioClip> c) { openClipEditor (t, std::move (c)); };
+    ctx.checkpoint = [this] (const juce::String& what) { history.checkpoint (what); };
+    ctx.discardUnchangedCheckpoint = [this] { history.discardIfUnchanged(); };
 
     juce::PropertiesFile::Options opts;
     opts.applicationName = "AMETHYST";
@@ -52,11 +54,12 @@ MainComponent::MainComponent()
     // Account + Pro gate
     account = std::make_unique<Account> (*settings, AMETHYST_SUPABASE_URL, AMETHYST_SUPABASE_ANON_KEY);
     account->addChangeListener (this);
-    engine.isProUnlocked = [this] { return account->isPro(); };
+    engine.unlockedTier = [this] { return account->getTier(); };
     ctx.isPro = [this] { return account->isPro(); };
-    ctx.showProPrompt = [this] (const juce::String& feature)
+    ctx.tier = [this] { return account->getTier(); };
+    ctx.showProPrompt = [this] (const juce::String& feature, int requiredTier)
     {
-        ProPrompt::show (*account, feature, this, [this] { AccountPanel::show (*account, this); });
+        ProPrompt::show (*account, feature, requiredTier, this, [this] { AccountPanel::show (*account, this); });
     };
     accountBtn.onClick = [this] { AccountPanel::show (*account, this); };
     addAndMakeVisible (accountBtn);
@@ -128,6 +131,11 @@ MainComponent::MainComponent()
     for (auto* b : { &moveToolBtn, &trimToolBtn, &cutToolBtn })
         addAndMakeVisible (b);
     setTool (EditTool::Move);
+
+    snapBtn.setTooltip ("Magnet snap: clips, trims, cuts and the playhead snap to this grid. Hold Shift to drag freely");
+    snapBtn.onClick = [this] { showSnapMenu(); };
+    addAndMakeVisible (snapBtn);
+    setSnap (appProperties.getUserSettings()->getIntValue ("snapIndex", 10));
     zoomSlider.onValueChange = [this] { view.pixelsPerSecond = zoomSlider.getValue(); };
 
     for (juce::Component* c : std::initializer_list<juce::Component*> {
@@ -167,7 +175,7 @@ MainComponent::~MainComponent()
     engine.knownPlugins.removeChangeListener (this);
     engine.deviceManager.removeChangeListener (this);
     account->removeChangeListener (this);
-    engine.isProUnlocked = nullptr;
+    engine.unlockedTier = nullptr;
     engine.deviceManager.removeAudioCallback (&engine);
 
     pluginWindows.closeAll();
@@ -315,16 +323,19 @@ void MainComponent::resized()
         auto tools = rulerArea.withWidth (kHeaderWidth).reduced (4, 3);
         for (auto* b : { &moveToolBtn, &trimToolBtn, &cutToolBtn })
         {
-            b->setBounds (tools.removeFromLeft (44));
+            b->setBounds (tools.removeFromLeft (42));
             tools.removeFromLeft (2);
             b->toFront (false);
         }
-        tools.removeFromLeft (4);
-        zoomSlider.setBounds (tools.reduced (0, 3));
-        zoomSlider.toFront (false);
+        tools.removeFromLeft (3);
+        snapBtn.setBounds (tools.removeFromLeft (70));
+        snapBtn.toFront (false);
     }
 
-    hScroll.setBounds (r.removeFromBottom (14).withTrimmedLeft (kHeaderWidth));
+    // bottom strip: zoom under the track list, horizontal scroll under the lanes
+    auto bottomStrip = r.removeFromBottom (20);
+    zoomSlider.setBounds (bottomStrip.withWidth (kHeaderWidth).reduced (14, 2));
+    hScroll.setBounds (bottomStrip.withTrimmedLeft (kHeaderWidth).reduced (0, 3));
     viewport.setBounds (r);
     layoutTracks();
 }
@@ -343,7 +354,7 @@ void MainComponent::setMixerVisible (bool shouldShow)
 {
     mixer.setVisible (shouldShow);
     for (juce::Component* c : std::initializer_list<juce::Component*> { &ruler, &viewport, &hScroll, &zoomSlider,
-                                                                         &moveToolBtn, &trimToolBtn, &cutToolBtn })
+                                                                         &moveToolBtn, &trimToolBtn, &cutToolBtn, &snapBtn })
         c->setVisible (! shouldShow);
 
     mixerBtn.setToggleState (shouldShow, juce::dontSendNotification);
@@ -380,6 +391,9 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     }
     if (key == juce::KeyPress::homeKey)                { engine.setTransportPosition (0); view.startSeconds = 0.0; return true; }
     if (key == juce::KeyPress ('s', juce::ModifierKeys::commandModifier, 0)) { saveProject (false); return true; }
+    if (key == juce::KeyPress ('z', juce::ModifierKeys::commandModifier, 0)) { undoEdit (false); return true; }
+    if (key == juce::KeyPress ('z', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)
+        || key == juce::KeyPress ('y', juce::ModifierKeys::commandModifier, 0)) { undoEdit (true); return true; }
     if (key == juce::KeyPress ('o', juce::ModifierKeys::commandModifier, 0)) { openProject(); return true; }
     return false;
 }
@@ -465,6 +479,7 @@ void MainComponent::importFiles (const juce::StringArray& files, Track* target, 
     juce::StringArray failed;
     const double sr = juce::jmax (1.0, engine.getSampleRate());
     const auto start = (juce::int64) std::llround (juce::jmax (0.0, startSeconds) * sr);
+    history.checkpoint ("Import audio");
 
     for (auto& path : files)
     {
@@ -607,6 +622,37 @@ void MainComponent::setTool (EditTool tool)
         tc->repaint();
 }
 
+void MainComponent::setSnap (int index)
+{
+    view.snapIndex = juce::jlimit (0, (int) kSnapOptions.size() - 1, index);
+    snapBtn.setLabel (kSnapOptions[(size_t) view.snapIndex].name);
+    snapBtn.setToggleState (view.snapBeats() > 0.0, juce::dontSendNotification);
+    appProperties.getUserSettings()->setValue ("snapIndex", view.snapIndex);
+    for (auto* tc : trackComps)
+        tc->repaint();
+}
+
+void MainComponent::showSnapMenu()
+{
+    juce::PopupMenu m;
+    m.addSectionHeader ("Snap to");
+    for (int i = 0; i < (int) kSnapOptions.size(); ++i)
+    {
+        if (i == 1 || i == 6 || i == 11)
+            m.addSeparator();
+        m.addItem (1 + i, kSnapOptions[(size_t) i].name, true, i == view.snapIndex);
+    }
+    m.addSeparator();
+    m.addItem (100, "Hold Shift while dragging to ignore snap", false, false);
+
+    juce::Component::SafePointer<MainComponent> safe (this);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&snapBtn), [safe] (int r)
+    {
+        if (safe != nullptr && r >= 1 && r <= (int) kSnapOptions.size())
+            safe->setSnap (r - 1);
+    });
+}
+
 void MainComponent::updateAccountButton()
 {
     if (! account->isSignedIn())
@@ -617,7 +663,7 @@ void MainComponent::updateAccountButton()
     else
     {
         const bool pro = account->isPro();
-        accountBtn.setInfo (account->getAvatar(), account->getEmail(), pro ? "PRO" : "FREE", pro, true);
+        accountBtn.setInfo (account->getAvatar(), account->getEmail(), account->isUltra() ? "ULTRA" : (pro ? "PRO" : "FREE"), pro, true);
         accountBtn.setTooltip (account->getEmail() + "  -  " + account->getPlanText());
     }
 }
@@ -702,7 +748,7 @@ void MainComponent::toggleRecord()
 {
     if (engine.isRecording())
     {
-        engine.stop();
+        stopTransport();
         return;
     }
 
@@ -720,11 +766,64 @@ void MainComponent::toggleRecord()
 void MainComponent::stopOrReturn()
 {
     if (engine.isPlaying() || engine.isRecording())
-        engine.stop();
+        stopTransport();
     else
     {
         engine.setTransportPosition (0);
         view.startSeconds = 0.0;
+    }
+}
+
+void MainComponent::stopTransport()
+{
+    const bool wasRecording = engine.isRecording();
+    if (wasRecording)
+        history.checkpoint ("Record take");
+    engine.stop();
+    if (wasRecording)
+        placeNewTakes();
+}
+
+void MainComponent::placeNewTakes()
+{
+    bool changed = false;
+
+    for (auto& [source, clip] : engine.consumeNewTakes())
+    {
+        if (! engine.isValidChannel (source) || ! source->takesToFreeTrack)
+            continue;
+
+        auto* target = engine.findTrackForTake (source, *clip);
+        if (target == source)
+            continue; // nothing underneath it - leave it where it was recorded
+
+        if (target == nullptr) // no free track below: make one
+            target = addTrack (source->name + " take");
+
+        // The take lane plays through the source's mixer channel - same plug-ins, fader and pan,
+        // so moving the take never changes how loud it is or how it sounds.
+        engine.setPlayThrough (*target, source->playThrough != nullptr ? source->playThrough : source);
+
+        if (auto moved = engine.removeClip (*source, clip.get()))
+            engine.addClip (*target, std::move (moved));
+        changed = true;
+    }
+
+    if (changed && mixer.isVisible())
+        mixer.rebuild();
+}
+
+void MainComponent::undoEdit (bool redo)
+{
+    if (engine.isRecording())
+        return;
+
+    if (redo ? history.redo() : history.undo())
+    {
+        for (auto* tc : trackComps)
+            tc->repaint();
+        if (clipEditor != nullptr && ! clipEditor->isValid())
+            clipEditor = nullptr;
     }
 }
 
@@ -819,6 +918,7 @@ void MainComponent::openProject()
         self.trackComps.clear();
 
         auto result = ProjectIO::load (self.engine, file);
+        self.history.clear(); // undo steps from the previous project don't apply
         self.projectFile = file;
 
         self.metroBtn.setToggleState (self.engine.metronomeOn.load(), juce::dontSendNotification);

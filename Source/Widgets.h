@@ -2,6 +2,69 @@
 
 #include "Theme.h"
 
+// Slider with a right-click menu: Reset, Copy value, Paste value, Type in value...
+class ValueSlider : public juce::Slider
+{
+public:
+    using juce::Slider::Slider;
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (! e.mods.isPopupMenu())
+        {
+            juce::Slider::mouseDown (e);
+            return;
+        }
+
+        juce::PopupMenu m;
+        m.addSectionHeader (getTextFromValue (getValue()));
+        m.addItem (1, "Reset", isDoubleClickReturnEnabled());
+        m.addItem (2, "Copy value");
+        m.addItem (3, "Paste value", clipboard().has_value());
+        m.addItem (4, "Type in value...");
+
+        juce::Component::SafePointer<ValueSlider> safe (this);
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this), [safe] (int r)
+        {
+            if (safe == nullptr)
+                return;
+            auto& s = *safe;
+            if (r == 1)      s.setValue (s.getDoubleClickReturnValue(), juce::sendNotificationSync);
+            else if (r == 2) clipboard() = s.getValue();
+            else if (r == 3 && clipboard().has_value()) s.setValue (juce::jlimit (s.getMinimum(), s.getMaximum(), *clipboard()), juce::sendNotificationSync);
+            else if (r == 4) s.showTypeIn();
+        });
+    }
+
+    void mouseDrag (const juce::MouseEvent& e) override { if (! e.mods.isPopupMenu()) juce::Slider::mouseDrag (e); }
+    void mouseUp (const juce::MouseEvent& e) override   { if (! e.mods.isPopupMenu()) juce::Slider::mouseUp (e); }
+
+private:
+    static std::optional<double>& clipboard() { static std::optional<double> v; return v; }
+
+    void showTypeIn()
+    {
+        typeIn = std::make_unique<juce::AlertWindow> ("Type in value", getName(), juce::MessageBoxIconType::NoIcon);
+        typeIn->addTextEditor ("v", getTextFromValue (getValue()));
+        typeIn->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
+        typeIn->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        juce::Component::SafePointer<ValueSlider> safe (this);
+        typeIn->enterModalState (true, juce::ModalCallbackFunction::create ([safe] (int r)
+        {
+            if (safe == nullptr || safe->typeIn == nullptr)
+                return;
+            if (r == 1)
+            {
+                const auto text = safe->typeIn->getTextEditorContents ("v");
+                safe->setValue (juce::jlimit (safe->getMinimum(), safe->getMaximum(), safe->getValueFromText (text)), juce::sendNotificationSync);
+            }
+            safe->typeIn.reset();
+        }), false);
+    }
+
+    std::unique_ptr<juce::AlertWindow> typeIn;
+};
+
 // Glass knob with a caption underneath and a value bubble while dragging.
 class LabeledKnob : public juce::Component
 {
@@ -32,7 +95,7 @@ public:
 
     void resized() override { slider.setBounds (getLocalBounds().withTrimmedBottom (14)); }
 
-    juce::Slider slider;
+    ValueSlider slider;
     juce::String caption;
 };
 
@@ -135,6 +198,51 @@ private:
 
     Icon icon;
     juce::Colour glow;
+};
+
+// Magnet (snap) button: horseshoe icon + current snap size; lit when snapping is on.
+class MagnetButton : public juce::Button
+{
+public:
+    MagnetButton() : juce::Button ("Snap") {}
+    void setLabel (const juce::String& t) { label = t; repaint(); }
+
+    void paintButton (juce::Graphics& g, bool over, bool down) override
+    {
+        auto r = getLocalBounds().toFloat().reduced (1.0f);
+        const float rad = juce::jmin (9.0f, r.getHeight() * 0.5f);
+        const bool on = getToggleState();
+        if (on)
+        {
+            g.setColour (Theme::accent.withAlpha (0.25f));
+            g.fillRoundedRectangle (r.expanded (1.5f), rad + 1.5f);
+            g.setGradientFill (juce::ColourGradient (Theme::accent.brighter (0.2f), r.getX(), r.getY(), Theme::accent.darker (0.4f), r.getX(), r.getBottom(), false));
+        }
+        else
+            g.setColour (juce::Colours::white.withAlpha (down ? 0.03f : (over ? 0.13f : 0.07f)));
+        g.fillRoundedRectangle (r, rad);
+        g.setColour (juce::Colours::white.withAlpha (over ? 0.3f : 0.15f));
+        g.drawRoundedRectangle (r.reduced (0.5f), rad, 1.0f);
+
+        // horseshoe magnet
+        auto icon = r.removeFromLeft (r.getHeight()).reduced (r.getHeight() * 0.22f);
+        juce::Path arc;
+        arc.addCentredArc (icon.getCentreX(), icon.getCentreY() - icon.getHeight() * 0.05f, icon.getWidth() * 0.38f, icon.getHeight() * 0.38f,
+                           0.0f, juce::MathConstants<float>::halfPi, juce::MathConstants<float>::pi * 1.5f, true);
+        g.setColour (on ? juce::Colours::white : Theme::text);
+        g.strokePath (arc, juce::PathStrokeType (icon.getWidth() * 0.22f, juce::PathStrokeType::curved, juce::PathStrokeType::butt));
+        g.setColour (on ? Theme::record.brighter (0.4f) : Theme::record);
+        const float tipW = icon.getWidth() * 0.22f, tipY = icon.getCentreY() - icon.getHeight() * 0.05f;
+        g.fillRect (juce::Rectangle<float> (icon.getCentreX() - icon.getWidth() * 0.38f - tipW * 0.5f, tipY - tipW * 1.4f, tipW, tipW * 1.1f));
+        g.fillRect (juce::Rectangle<float> (icon.getCentreX() + icon.getWidth() * 0.38f - tipW * 0.5f, tipY - tipW * 1.4f, tipW, tipW * 1.1f));
+
+        g.setColour (on ? juce::Colours::white : Theme::textDim);
+        g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+        g.drawText (label, r.toNearestInt().withTrimmedRight (4), juce::Justification::centredLeft, true);
+    }
+
+private:
+    juce::String label { "Beat" };
 };
 
 // Brand mark: a glowing amethyst waveform gem.

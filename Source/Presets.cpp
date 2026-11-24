@@ -158,6 +158,9 @@ namespace ProjectIO
             tx->setAttribute ("solo", t->solo.load());
             tx->setAttribute ("monitor", t->monitor.load());
             tx->setAttribute ("layerTakes", t->layerTakes.load());
+            tx->setAttribute ("takesToFreeTrack", t->takesToFreeTrack);
+            if (t->playThrough != nullptr)
+                tx->setAttribute ("playThroughIndex", engine.getTracks().indexOf (t->playThrough));
             tx->addChildElement (ChannelPresets::toXml (*t, t->name).release());
 
             for (auto& clip : t->clips)
@@ -165,6 +168,10 @@ namespace ProjectIO
                 auto* cx = tx->createNewChildElement ("CLIP");
                 cx->setAttribute ("file", clip->file.getFullPathName());
                 cx->setAttribute ("startSeconds", (double) clip->startSample.load() / sr);
+                if (clip->name.isNotEmpty())
+                    cx->setAttribute ("name", clip->name);
+                if (! clip->colour.isTransparent())
+                    cx->setAttribute ("colour", clip->colour.toString());
                 if (clip->getOffset() > 0)
                     cx->setAttribute ("trimOffsetSeconds", (double) clip->getOffset() / sr);
                 if (clip->trimLength.load() >= 0)
@@ -215,6 +222,7 @@ namespace ProjectIO
 
         const double sr = engine.getSampleRate();
 
+        std::vector<std::pair<Track*, int>> routes; // applied once every track exists
         for (auto* tx : root->getChildWithTagNameIterator ("TRACK"))
         {
             auto* t = engine.addTrack (tx->getStringAttribute ("name", "Track"));
@@ -224,6 +232,9 @@ namespace ProjectIO
             t->solo = tx->getBoolAttribute ("solo", false);
             t->monitor = tx->getBoolAttribute ("monitor", false);
             t->layerTakes = tx->getBoolAttribute ("layerTakes", false); // older projects used "newest on top"
+            t->takesToFreeTrack = tx->getBoolAttribute ("takesToFreeTrack", true);
+            if (tx->hasAttribute ("playThroughIndex"))
+                routes.emplace_back (t, tx->getIntAttribute ("playThroughIndex"));
 
             if (auto* preset = tx->getChildByName ("CHANNEL_PRESET"))
             {
@@ -240,6 +251,9 @@ namespace ProjectIO
                 if (auto clip = engine.loadClip (clipFile, start))
                 {
                     clip->enabled = cx->getBoolAttribute ("enabled", true);
+                    clip->name = cx->getStringAttribute ("name");
+                    if (cx->hasAttribute ("colour"))
+                        clip->colour = juce::Colour::fromString (cx->getStringAttribute ("colour"));
                     clip->settings.readFrom (*cx);
                     if (! clip->settings.isNeutral())
                         engine.renderNow (*clip);
@@ -252,6 +266,10 @@ namespace ProjectIO
                     problems.add (t->name + ": missing audio " + clipFile.getFullPathName());
             }
         }
+
+        for (auto& [lane, index] : routes)
+            if (auto* channel = engine.getTracks()[index])
+                engine.setPlayThrough (*lane, channel);
 
         if (problems.isEmpty())
             return juce::Result::ok();

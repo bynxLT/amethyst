@@ -7,6 +7,7 @@
 #include "Transport.h"
 #include "ClipEditor.h"
 #include "AccountUI.h"
+#include "EditHistory.h"
 
 class MainComponent : public juce::Component,
                       public juce::DragAndDropContainer,
@@ -50,6 +51,9 @@ private:
     void togglePlay();
     void toggleRecord();
     void stopOrReturn();
+    void stopTransport();     // stops; after recording, records an undo step and places the new takes
+    void placeNewTakes();
+    void undoEdit (bool redo);
 
     void showAudioSettings();
     void showPluginManager();
@@ -59,6 +63,7 @@ private:
 
     // Declaration order matters: the engine must outlive everything that holds plug-ins or thumbnails.
     AudioEngine engine;
+    EditHistory history { engine };
     juce::ApplicationProperties appProperties;
     std::unique_ptr<Account> account;   // after appProperties: it writes to the settings file
     PluginWindowManager pluginWindows;
@@ -82,7 +87,10 @@ private:
     LabeledKnob masterK { "Master", -60.0, 12.0, 0.0, " dB", 0.1, -12.0 };
     juce::Slider zoomSlider;
     juce::TextButton moveToolBtn { "Move" }, trimToolBtn { "Trim" }, cutToolBtn { "Cut" };
+    MagnetButton snapBtn;
     void setTool (EditTool);
+    void setSnap (int index);
+    void showSnapMenu();
     juce::Rectangle<int> masterMeterArea, logoArea;
     std::vector<juce::Rectangle<int>> toolbarGroups;
     bool showWordmark = true;
