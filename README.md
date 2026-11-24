@@ -60,6 +60,11 @@ Trimming is non-destructive: drag an edge back out, or right-click a clip → **
 
 Cut and trimmed edges get tiny automatic fades, so they don't click.
 
+**Navigating.**
+- **Ctrl + scroll wheel** zooms in and out around the mouse (Cmd on Mac).
+- **Shift + scroll** (or scrolling over the ruler) moves left and right.
+- Dragging the playhead along the ruler, or dragging a clip, into the left or right edge scrolls the timeline. It goes faster the further in you push.
+
 **Magnet snap and grid.** The lanes show alternating bar shading, bar lines, beat lines and (when you zoom in) the snap lines.
 - The **magnet** button next to the tools picks the snap size: none, 1/6 to 1/2 step, step, 1/6 to 1/2 beat, beat or bar.
 - Moving, trimming, cutting and clicking to place the playhead all snap to it.
@@ -251,7 +256,15 @@ Saved presets appear in the same menu, so you can load one onto any track with a
 ## Projects and export
 
 - **Save/Open** work with `.amethyst` session files (older `.vdaw` projects still open), which hold the tracks, routing, channel strips and takes. Shift-click Save for Save As.
-- **Export** renders the master bus to a stereo WAV in real time (with a 2-second tail). The metronome is left out of the export.
+- **Export** opens a format menu:
+  - **Wave** (24-bit). Shortcut: Ctrl+R.
+  - **MP3** (320 kbps). Shortcut: Shift+Ctrl+R.
+  - **OGG**.
+  - **FLAC** (24-bit).
+  - **M4A** (AAC, 192 kbps).
+  - **Last exported format**.
+
+  The whole song, plus a 3-second tail for reverbs, renders offline, much faster than real time, with a progress bar and a Cancel button. The metronome is never included. MP3 and M4A use the encoders built into the operating system. Windows has both; macOS has M4A only, so MP3 is greyed out on Mac.
 
 Keys: `Space` play/pause Â· `R` record Â· `Home` return to start Â· `Ctrl+S` save Â· `Ctrl+O` open
 

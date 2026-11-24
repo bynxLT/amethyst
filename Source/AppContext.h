@@ -50,6 +50,37 @@ struct TimelineView
     {
         return juce::jmax (0.0, startSeconds + (x - (float) lane.getX()) / pixelsPerSecond);
     }
+
+    // While dragging near the left/right edge, scroll the timeline that way.
+    // Faster the deeper into the edge zone the mouse is. Returns true if it scrolled.
+    bool autoScroll (float mouseX, juce::Rectangle<int> lane)
+    {
+        constexpr float zone = 48.0f;
+        const double visible = lane.getWidth() / pixelsPerSecond;
+        double step = 0.0;
+        if (mouseX > (float) lane.getRight() - zone)
+            step = juce::jmin (1.5, (double) ((mouseX - ((float) lane.getRight() - zone)) / zone));
+        else if (mouseX < (float) lane.getX() + zone && startSeconds > 0.0)
+            step = -juce::jmin (1.5, (double) ((((float) lane.getX() + zone) - mouseX) / zone));
+        if (step == 0.0)
+            return false;
+        startSeconds = juce::jmax (0.0, startSeconds + step * visible * 0.025);
+        return true;
+    }
+
+    // Zoom by `factor`, keeping the time under anchorX where it is (Ctrl + scroll wheel).
+    void zoomAround (double factor, float anchorX, juce::Rectangle<int> lane)
+    {
+        const double anchorTime = xToTime (anchorX, lane);
+        pixelsPerSecond = juce::jlimit (5.0, 400.0, pixelsPerSecond * factor);
+        startSeconds = juce::jmax (0.0, anchorTime - (anchorX - (float) lane.getX()) / pixelsPerSecond);
+    }
+
+    // Shift + scroll wheel moves sideways.
+    void scrollBy (double fractionOfView, juce::Rectangle<int> lane)
+    {
+        startSeconds = juce::jmax (0.0, startSeconds + fractionOfView * lane.getWidth() / pixelsPerSecond);
+    }
 };
 
 // Shared services handed to the UI components.

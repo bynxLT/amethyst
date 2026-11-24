@@ -780,6 +780,80 @@ void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* input, i
                                                     int numSamples,
                                                     const juce::AudioIODeviceCallbackContext&)
 {
+    if (offlineActive.load())
+    {
+        // an export is rendering the song on another thread: the speakers stay silent meanwhile
+        for (int c = 0; c < numOutputs; ++c)
+            if (output[c] != nullptr)
+                juce::FloatVectorOperations::clear (output[c], numSamples);
+        return;
+    }
+    processAudio (input, numInputs, output, numOutputs, numSamples);
+}
+
+juce::Result AudioEngine::renderSong (juce::AudioBuffer<float>& result, std::function<bool (float)> onProgress)
+{
+    if (recording)
+        return juce::Result::fail ("Stop recording before exporting.");
+
+    const auto length = getSessionLengthSamples();
+    if (length <= 0)
+        return juce::Result::fail ("There's nothing to export yet - record or import something first.");
+
+    const double sr = getSampleRate();
+    const auto total = length + (juce::int64) (sr * 3.0); // 3 s tail for reverbs and delays
+    if (total > (juce::int64) std::numeric_limits<int>::max())
+        return juce::Result::fail ("The song is too long to export.");
+
+    stop();
+    const auto savedPosition = position.load();
+    result.setSize (2, (int) total);
+    result.clear();
+
+    const int block = juce::jmax (64, blockSize.load());
+    juce::AudioBuffer<float> out (2, block);
+
+    auto setNonRealtime = [this] (bool offline)
+    {
+        const juce::ScopedLock sl (lock);
+        forEachChannel ([offline] (Track& t)
+        {
+            for (auto& s : t.inserts)
+                if (s->plugin != nullptr)
+                    s->plugin->setNonRealtime (offline);
+        });
+    };
+
+    setNonRealtime (true); // plug-ins may use higher-quality modes while exporting
+    offlineActive = true;
+    position = 0;
+    playing = true;
+
+    bool cancelled = false;
+    for (juce::int64 done = 0; done < total; done += block)
+    {
+        const int n = (int) juce::jmin<juce::int64> (block, total - done);
+        float* outs[2] = { out.getWritePointer (0), out.getWritePointer (1) };
+        processAudio (nullptr, 0, outs, 2, n);
+        result.copyFrom (0, (int) done, out, 0, 0, n);
+        result.copyFrom (1, (int) done, out, 1, 0, n);
+
+        if (onProgress && ! onProgress ((float) ((double) (done + n) / (double) total)))
+        {
+            cancelled = true;
+            break;
+        }
+    }
+
+    playing = false;
+    position = savedPosition;
+    offlineActive = false;
+    setNonRealtime (false);
+    return cancelled ? juce::Result::fail ("Export cancelled.") : juce::Result::ok();
+}
+
+void AudioEngine::processAudio (const float* const* input, int numInputs, float* const* output, int numOutputs, int numSamples)
+{
     for (int c = 0; c < numOutputs; ++c)
         if (output[c] != nullptr)
             juce::FloatVectorOperations::clear (output[c], numSamples);
@@ -886,8 +960,8 @@ void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* input, i
             bounceDone = true;
     }
 
-    // Metronome
-    if (isPlay && metronomeOn.load() && bounceWriter == nullptr)
+    // Metronome (never in exports)
+    if (isPlay && metronomeOn.load() && bounceWriter == nullptr && ! offlineActive.load())
     {
         const double beatLen = sr * 60.0 / juce::jmax (20.0, bpm.load());
         const double clickLen = sr * 0.03;

@@ -381,7 +381,9 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
 {
     if (key == juce::KeyPress::spaceKey)               { togglePlay(); return true; }
     if (key == juce::KeyPress::tabKey)                 { setMixerVisible (! mixer.isVisible()); return true; }
-    if (key.getTextCharacter() == 'r' || key.getTextCharacter() == 'R') { toggleRecord(); return true; }
+    if (key == juce::KeyPress ('r', juce::ModifierKeys::commandModifier, 0)) { exportAs ((int) Exporter::Format::Wav); return true; }
+    if (key == juce::KeyPress ('r', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)) { exportAs ((int) Exporter::Format::Mp3); return true; }
+    if ((key.getTextCharacter() == 'r' || key.getTextCharacter() == 'R') && ! key.getModifiers().isCommandDown()) { toggleRecord(); return true; }
     if (! mixer.isVisible() && ! key.getModifiers().isAnyModifierKeyDown())
     {
         const auto ch = juce::CharacterFunctions::toLowerCase (key.getTextCharacter());
@@ -550,6 +552,9 @@ void MainComponent::timerCallback()
     }
     else
     {
+        if (! zoomSlider.isMouseButtonDown() && std::abs (zoomSlider.getValue() - view.pixelsPerSecond) > 0.01)
+            zoomSlider.setValue (view.pixelsPerSecond, juce::dontSendNotification); // follows Ctrl + wheel zooming
+
         masterLevelL = juce::jmax (master.meterL.exchange (0.0f), masterLevelL * 0.85f);
         masterLevelR = juce::jmax (master.meterR.exchange (0.0f), masterLevelR * 0.85f);
 
@@ -735,7 +740,7 @@ void MainComponent::rebuildTrackComponents()
 //==============================================================================
 void MainComponent::togglePlay()
 {
-    if (engine.isRecording())
+    if (engine.isRecording() || engine.isExporting())
         return;
 
     if (engine.isPlaying())
@@ -746,6 +751,8 @@ void MainComponent::togglePlay()
 
 void MainComponent::toggleRecord()
 {
+    if (engine.isExporting())
+        return;
     if (engine.isRecording())
     {
         stopTransport();
@@ -935,23 +942,73 @@ void MainComponent::openProject()
 
 void MainComponent::exportMix()
 {
+    using Exporter::Format;
+   #if JUCE_MAC
+    const juce::String ctrl ("Cmd");
+   #else
+    const juce::String ctrl ("Ctrl");
+   #endif
+
+    juce::PopupMenu m;
+    m.addSectionHeader ("Export the whole song as");
+    auto add = [&m] (Format f, const juce::String& shortcut)
+    {
+        juce::PopupMenu::Item item (Exporter::displayName (f) + "...");
+        item.itemID = 1 + (int) f;
+        item.isEnabled = Exporter::isAvailable (f);
+        item.shortcutKeyDescription = shortcut;
+        m.addItem (item);
+    };
+    add (Format::Wav, ctrl + "+R");
+    add (Format::Mp3, "Shift+" + ctrl + "+R");
+    add (Format::Ogg, {});
+    add (Format::Flac, {});
+    add (Format::M4a, {});
+    m.addSeparator();
+    const int last = appProperties.getUserSettings()->getIntValue ("lastExportFormat", -1);
+    m.addItem (100, "Last exported format" + (last >= 0 ? "  (" + Exporter::displayName ((Format) last) + ")" : juce::String()), last >= 0);
+
+    juce::Component::SafePointer<MainComponent> safe (this);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&exportBtn), [safe, last] (int r)
+    {
+        if (safe == nullptr || r == 0)
+            return;
+        safe->exportAs (r == 100 ? last : r - 1);
+    });
+}
+
+void MainComponent::exportAs (int formatIndex)
+{
+    using Exporter::Format;
+    const auto format = (Format) juce::jlimit (0, 4, formatIndex);
+
+    if (engine.isRecording() || engine.isExporting())
+        return;
     if (engine.getSessionLengthSamples() <= 0)
     {
         juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Nothing to export", "Record or import something first.");
         return;
     }
+    if (! Exporter::isAvailable (format))
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Not available",
+                                                Exporter::displayName (format) + " export isn't available on this computer.");
+        return;
+    }
 
-    auto defaultName = projectFile != juce::File() ? projectFile.getFileNameWithoutExtension() : juce::String ("Mix");
-    ctx.chooser = std::make_unique<juce::FileChooser> ("Export mix", AudioEngine::getAppFolder().getChildFile (defaultName + ".wav"), "*.wav");
+    const auto ext = Exporter::extension (format);
+    const auto defaultName = projectFile != juce::File() ? projectFile.getFileNameWithoutExtension() : juce::String ("Mix");
+    ctx.chooser = std::make_unique<juce::FileChooser> ("Export " + Exporter::displayName (format),
+                                                       AudioEngine::getAppFolder().getChildFile (defaultName + ext), "*" + ext);
 
     juce::Component::SafePointer<MainComponent> safe (this);
     ctx.chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
                                   | juce::FileBrowserComponent::warnAboutOverwriting,
-                              [safe] (const juce::FileChooser& fc)
+                              [safe, format, ext] (const juce::FileChooser& fc)
     {
         if (safe == nullptr || fc.getResult() == juce::File())
             return;
-        if (! safe->engine.startBounce (fc.getResult().withFileExtension (".wav")))
-            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Export failed", "Couldn't create the output file.");
+        safe->appProperties.getUserSettings()->setValue ("lastExportFormat", (int) format);
+        Exporter::exportSong (safe->engine, format, fc.getResult().withFileExtension (ext), safe.getComponent());
     });
 }

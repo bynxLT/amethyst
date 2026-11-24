@@ -39,6 +39,16 @@ namespace
                 g.drawVerticalLine ((int) view.timeToX (i * snapSec, lane), top, bottom);
         }
 
+        // 16th-step ticks along the bottom of the ruler
+        const double stepSec = beatSec * 0.25;
+        if (labels && stepSec * pps >= 7.0)
+        {
+            g.setColour (Theme::text.withAlpha (0.18f));
+            for (auto i = (juce::int64) std::floor (view.startSeconds / stepSec); i * stepSec < endSec; ++i)
+                if (i % 4 != 0)
+                    g.drawVerticalLine ((int) view.timeToX (i * stepSec, lane), bottom - 3.0f, bottom);
+        }
+
         // beat lines
         if (beatSec * pps >= 9.0)
         {
@@ -537,20 +547,30 @@ void TrackComponent::mouseDown (const juce::MouseEvent& e)
 
 void TrackComponent::mouseDrag (const juce::MouseEvent& e)
 {
+    if (draggingClip.expired())
+        return;
+
+    lastDragX = e.x;
+    lastBypassSnap = e.mods.isShiftDown();
+    applyDrag (e.x, lastBypassSnap);
+    if (! isTimerRunning())
+        startTimerHz (40);
+}
+
+void TrackComponent::applyDrag (int x, bool bypassSnap)
+{
     auto clip = draggingClip.lock();
     if (clip == nullptr)
         return;
 
-    const bool bypassSnap = e.mods.isShiftDown();
-
     switch (dragMode)
     {
-        case Drag::TrimStart: ctx.engine.trimClipStart (*clip, sampleAtX (e.x, bypassSnap)); break;
-        case Drag::TrimEnd:   ctx.engine.trimClipEnd (*clip, sampleAtX (e.x, bypassSnap));   break;
+        case Drag::TrimStart: ctx.engine.trimClipStart (*clip, sampleAtX (x, bypassSnap)); break;
+        case Drag::TrimEnd:   ctx.engine.trimClipEnd (*clip, sampleAtX (x, bypassSnap));   break;
         case Drag::Move:
         {
             const double sr = juce::jmax (1.0, ctx.engine.getSampleRate());
-            const double newStart = ctx.view.snap (timeAtX (e.x) - dragGrabOffsetSec, ctx.engine.bpm.load(), bypassSnap);
+            const double newStart = ctx.view.snap (timeAtX (x) - dragGrabOffsetSec, ctx.engine.bpm.load(), bypassSnap);
             clip->startSample = (juce::int64) std::llround (juce::jmax (0.0, newStart) * sr);
             break;
         }
@@ -559,8 +579,36 @@ void TrackComponent::mouseDrag (const juce::MouseEvent& e)
     repaint();
 }
 
+void TrackComponent::timerCallback()
+{
+    if (draggingClip.expired() || dragMode == Drag::None)
+    {
+        stopTimer();
+        return;
+    }
+    // holding a clip against the left/right edge keeps scrolling, and the clip comes along
+    if (ctx.view.autoScroll ((float) lastDragX, laneBounds()))
+    {
+        applyDrag (lastDragX, lastBypassSnap);
+        if (auto* p = getParentComponent())
+            p->repaint();
+    }
+}
+
+void TrackComponent::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
+{
+    if (isInLane (e.getPosition()) && handleTimelineWheel (ctx.view, e, w, laneBounds()))
+    {
+        if (auto* p = getParentComponent())
+            p->repaint();
+        return;
+    }
+    juce::Component::mouseWheelMove (e, w); // plain wheel scrolls the track list up/down
+}
+
 void TrackComponent::mouseUp (const juce::MouseEvent& e)
 {
+    stopTimer();
     if (dragMode != Drag::None && ctx.discardUnchangedCheckpoint)
         ctx.discardUnchangedCheckpoint(); // a click without a drag isn't an undo step
     draggingClip.reset();
@@ -983,12 +1031,49 @@ void RulerComponent::paint (juce::Graphics& g)
     g.drawVerticalLine ((int) px, 0.0f, (float) getHeight());
 }
 
-void RulerComponent::seek (const juce::MouseEvent& e)
+void RulerComponent::seekTo (int x)
 {
     auto lane = getLocalBounds().withTrimmedLeft (kHeaderWidth);
-    if (e.x >= lane.getX())
+    const int clamped = juce::jlimit (lane.getX(), lane.getRight(), x); // keep following when dragged past the edge
+    if (x >= lane.getX() - 40)
     {
-        const double t = ctx.view.snap (ctx.view.xToTime ((float) e.x, lane), ctx.engine.bpm.load(), e.mods.isShiftDown());
+        const double t = ctx.view.snap (ctx.view.xToTime ((float) clamped, lane), ctx.engine.bpm.load(), bypassSnap);
         ctx.engine.setTransportPosition ((juce::int64) std::llround (t * ctx.engine.getSampleRate()));
     }
+}
+
+void RulerComponent::timerCallback()
+{
+    // dragging the playhead into an edge keeps the timeline moving under it
+    if (ctx.view.autoScroll ((float) dragX, getLocalBounds().withTrimmedLeft (kHeaderWidth)))
+    {
+        seekTo (dragX);
+        if (auto* p = getParentComponent())
+            p->repaint();
+    }
+}
+
+void RulerComponent::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
+{
+    if (! handleTimelineWheel (ctx.view, e, w, getLocalBounds().withTrimmedLeft (kHeaderWidth)))
+        ctx.view.scrollBy (-(w.deltaY != 0.0f ? w.deltaY : w.deltaX) * 0.25, getLocalBounds().withTrimmedLeft (kHeaderWidth)); // plain wheel over the ruler scrolls sideways
+    repaint();
+}
+
+bool handleTimelineWheel (TimelineView& view, const juce::MouseEvent& e, const juce::MouseWheelDetails& w, juce::Rectangle<int> lane)
+{
+    if (e.mods.isCommandDown()) // Ctrl (Cmd on Mac) + wheel: zoom around the mouse
+    {
+        const float delta = w.deltaY != 0.0f ? w.deltaY : w.deltaX;
+        if (delta != 0.0f)
+            view.zoomAround (std::pow (1.25, delta / 0.15), (float) juce::jlimit (lane.getX(), lane.getRight(), e.x), lane);
+        return true;
+    }
+    if (e.mods.isShiftDown() || std::abs (w.deltaX) > std::abs (w.deltaY)) // sideways
+    {
+        const float delta = std::abs (w.deltaX) > std::abs (w.deltaY) ? w.deltaX : w.deltaY;
+        view.scrollBy (-delta * 0.25, lane);
+        return true;
+    }
+    return false;
 }

@@ -4,6 +4,7 @@
 #include "Plugins/Builtins.h"
 #include "Account.h"
 #include "EditHistory.h"
+#include "Exporter.h"
 
 bool amethystProtect (const void* data, std::size_t size, std::vector<unsigned char>& out, bool encrypt);
 double amethystTuneTest (double inputHz, int key, int scale, double retuneMs);
@@ -197,6 +198,59 @@ public:
             std::printf ("  [%s] an in-tune note passes through unchanged (got %.1f Hz)\n", cleanOk ? "ok" : "FAIL", untouched);
             if (! cleanOk) ++tuneFails;
             if (tuneFails > 0) { std::printf ("tune test FAILED\n"); return 1; }
+        }
+
+        // Export: the WHOLE song must come out (not just the start), in every format.
+        {
+            AudioEngine eng;
+            auto* t = eng.addTrack ("T");
+            const double esr = eng.getSampleRate();
+            const int len = (int) (esr * 60.0); // a 60-second "song"
+            auto b = std::make_shared<juce::AudioBuffer<float>> (2, len);
+            for (int i = 0; i < len; ++i)
+            {
+                const float v = i >= len - 2000 ? 0.9f : 0.3f * (float) std::sin (juce::MathConstants<double>::twoPi * 220.0 * i / esr);
+                b->setSample (0, i, v);
+                b->setSample (1, i, v);
+            }
+            auto clip = std::make_shared<AudioClip>();
+            clip->source = b; clip->buffer = b;
+            eng.addClip (*t, clip);
+
+            int exportFails = 0;
+            auto expect = [&exportFails] (bool ok, const juce::String& what) { std::printf ("  [%s] %s\n", ok ? "ok" : "FAIL", what.toRawUTF8()); if (! ok) ++exportFails; };
+
+            juce::AudioBuffer<float> mix;
+            const double t0 = juce::Time::getMillisecondCounterHiRes();
+            const auto r = eng.renderSong (mix, [] (float) { return true; });
+            const double ms = juce::Time::getMillisecondCounterHiRes() - t0;
+            expect (r.wasOk() && mix.getNumSamples() == len + (int) (esr * 3.0), "render covers the whole song plus a 3 s tail");
+            expect (std::abs (mix.getSample (0, len - 1000) - 0.9f) < 0.02f, "the very end of the song is in the export");
+            expect (ms < 60000.0, "a 60 s song renders faster than real time (" + juce::String (60000.0 / juce::jmax (1.0, ms), 0) + "x)");
+            expect (! eng.isPlaying() && ! eng.isExporting(), "transport is stopped again afterwards");
+
+            const auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("amethyst_export_test");
+            dir.createDirectory();
+            for (int f = 0; f <= 4; ++f)
+            {
+                const auto format = (Exporter::Format) f;
+                const auto file = dir.getChildFile ("song" + Exporter::extension (format));
+                if (! Exporter::isAvailable (format))
+                {
+                    std::printf ("  [skip] %s not available here\n", Exporter::displayName (format).toRawUTF8());
+                    continue;
+                }
+                const auto wr = Exporter::write (mix, esr, format, file);
+                double seconds = -1.0;
+                if (std::unique_ptr<juce::AudioFormatReader> reader (eng.audioFormats.createReaderFor (file)); reader != nullptr)
+                    seconds = reader->lengthInSamples / reader->sampleRate;
+                const bool lengthOk = seconds < 0.0 ? file.getSize() > 100000 : std::abs (seconds - 63.0) < 1.0;
+                expect (wr.wasOk() && lengthOk,
+                        Exporter::displayName (format) + ": " + (wr.wasOk() ? juce::String (file.getSize() / 1024) + " KB, "
+                            + (seconds < 0.0 ? juce::String ("(no reader to check length)") : juce::String (seconds, 2) + " s") : wr.getErrorMessage()));
+            }
+            dir.deleteRecursively();
+            if (exportFails > 0) { std::printf ("export test FAILED\n"); return 1; }
         }
 
         // Built-in effects: every factory preset, stereo noise + a tone, must stay finite and not blow up.

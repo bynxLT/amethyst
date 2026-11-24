@@ -8,6 +8,7 @@
 #include "ClipEditor.h"
 #include "AccountUI.h"
 #include "EditHistory.h"
+#include "Exporter.h"
 
 class MainComponent : public juce::Component,
                       public juce::DragAndDropContainer,
@@ -59,7 +60,8 @@ private:
     void showPluginManager();
     void saveProject (bool forceChooser);
     void openProject();
-    void exportMix();
+    void exportMix();             // shows the export format menu
+    void exportAs (int format);   // Exporter::Format index
 
     // Declaration order matters: the engine must outlive everything that holds plug-ins or thumbnails.
     AudioEngine engine;

@@ -65,6 +65,8 @@ target_sources(VocalDAW PRIVATE
     Source/Plugins/TunePlugin.cpp
     Source/Account.cpp
     Source/AccountUI.cpp
+    Source/Exporter.cpp
+    Source/Encoders.cpp
 )
 
 # --- Supabase (accounts / AMETHYST Pro) ---------------------------------------
@@ -110,7 +112,7 @@ target_compile_definitions(VocalDAW PRIVATE
 
 if(APPLE)
     # Keychain (saved sign-in) + memory meter
-    target_link_libraries(VocalDAW PRIVATE "-framework Security" "-framework CoreFoundation")
+    target_link_libraries(VocalDAW PRIVATE "-framework Security" "-framework CoreFoundation" "-framework AudioToolbox")
 endif()
 
 target_link_libraries(VocalDAW

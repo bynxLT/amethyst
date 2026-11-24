@@ -41,7 +41,13 @@ public:
     std::atomic<bool>   metronomeOn { false };
     std::atomic<double> bpm { 120.0 };
 
-    //==== Export (real-time bounce of the master bus) =========================
+    //==== Export ===============================================================
+    // Renders the whole song (plus a 3 s tail) as fast as the CPU allows into `result`.
+    // Call from a background thread. onProgress gets 0..1 and returns false to cancel.
+    juce::Result renderSong (juce::AudioBuffer<float>& result, std::function<bool (float)> onProgress);
+    bool isExporting() const noexcept { return offlineActive.load(); }
+
+    // (older real-time bounce, kept for compatibility)
     bool startBounce (const juce::File& wavFile);
     bool isBouncing() const noexcept { return bounceWriter != nullptr; }
     bool bounceReachedEnd() const noexcept { return bounceDone.load(); }
@@ -116,6 +122,8 @@ private:
     void ensureScratch (int numSamples);
     void processChannel (Track&, int numSamples);   // inserts + fader/pan + meters on trackBuffer[0..1]
     void renderClips (Track&, juce::int64 pos, int numSamples);   // adds the track's clips into trackBuffer[0..1]
+    void processAudio (const float* const* input, int numInputs, float* const* output, int numOutputs, int numSamples);
+    std::atomic<bool> offlineActive { false };
     std::atomic<const AudioClip*> previewClip { nullptr };
     template <typename Fn> void forEachChannel (Fn&& fn) { fn (master); for (auto* t : tracks) fn (*t); }
 

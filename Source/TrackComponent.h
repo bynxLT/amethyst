@@ -3,7 +3,7 @@
 #include "UiHelpers.h"
 
 // Channel header (left) + timeline lane with the track's clips (right).
-class TrackComponent : public juce::Component
+class TrackComponent : public juce::Component, private juce::Timer
 {
 public:
     TrackComponent (AppContext&, Track&);
@@ -23,6 +23,7 @@ public:
     void mouseUp (const juce::MouseEvent&) override;
     void mouseMove (const juce::MouseEvent&) override;
     void mouseExit (const juce::MouseEvent&) override;
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
     void mouseDoubleClick (const juce::MouseEvent&) override;
 
 private:
@@ -46,6 +47,11 @@ private:
     void splitAtSilences (const std::shared_ptr<AudioClip>&, bool removeSilentParts);
     std::unique_ptr<juce::AlertWindow> renameBox;
     void splitAt (const std::shared_ptr<AudioClip>&, juce::int64 at);
+
+    void timerCallback() override;               // auto-scroll while dragging a clip into an edge
+    void applyDrag (int x, bool bypassSnap);
+    int lastDragX = 0;
+    bool lastBypassSnap = false;
 
     enum class Drag { None, Move, TrimStart, TrimEnd };
     Drag dragMode = Drag::None;
@@ -72,17 +78,26 @@ private:
     JUCE_DECLARE_NON_COPYABLE (TrackComponent)
 };
 
-// Bar ruler above the lanes; click or drag to move the playhead.
-class RulerComponent : public juce::Component
+// Bar ruler above the lanes; click or drag to move the playhead. Dragging into either
+// edge scrolls the timeline; Ctrl + wheel zooms, Shift + wheel scrolls sideways.
+class RulerComponent : public juce::Component, private juce::Timer
 {
 public:
     explicit RulerComponent (AppContext& c) : ctx (c) {}
 
     void paint (juce::Graphics&) override;
-    void mouseDown (const juce::MouseEvent& e) override { seek (e); }
-    void mouseDrag (const juce::MouseEvent& e) override { seek (e); }
+    void mouseDown (const juce::MouseEvent& e) override { dragX = e.x; bypassSnap = e.mods.isShiftDown(); seekTo (e.x); startTimerHz (40); }
+    void mouseDrag (const juce::MouseEvent& e) override { dragX = e.x; bypassSnap = e.mods.isShiftDown(); seekTo (e.x); }
+    void mouseUp (const juce::MouseEvent&) override     { stopTimer(); }
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
 private:
-    void seek (const juce::MouseEvent&);
+    void timerCallback() override;
+    void seekTo (int x);
     AppContext& ctx;
+    int dragX = 0;
+    bool bypassSnap = false;
 };
+
+// Ctrl + wheel = zoom at the mouse, Shift + wheel (or a sideways swipe) = scroll. Returns true if handled.
+bool handleTimelineWheel (TimelineView&, const juce::MouseEvent&, const juce::MouseWheelDetails&, juce::Rectangle<int> lane);
