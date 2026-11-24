@@ -529,8 +529,13 @@ void MainComponent::timerCallback()
 
     repaint (masterMeterArea);
 
-    if (isShowing() && ! hasKeyboardFocus (true) && juce::Component::getCurrentlyFocusedComponent() == nullptr)
-        grabKeyboardFocus();
+    // Keep transport shortcuts working - but only when the main window itself is the focused OS window.
+    // Plug-in editors are native windows JUCE can't see into: stealing focus from them closes their
+    // drop-down menus before a choice registers and pulls the main window in front of them.
+    if (auto* peer = getPeer())
+        if (peer->isFocused() && isShowing() && ! hasKeyboardFocus (true)
+            && juce::Component::getCurrentlyFocusedComponent() == nullptr)
+            grabKeyboardFocus();
 }
 
 void MainComponent::changeListenerCallback (juce::ChangeBroadcaster* source)
