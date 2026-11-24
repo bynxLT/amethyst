@@ -60,6 +60,59 @@ public:
         ClipSettings back; back.readFrom (x);
         if (back != s) { std::printf ("settings XML round-trip failed\n"); return 1; }
 
+        // Clip editing: split, trim and overlapping-take playback, checked sample-exactly through the engine.
+        {
+            AudioEngine eng;
+            auto* t = eng.addTrack ("T");
+            auto makeClip = [] (float value, juce::int64 start, int len)
+            {
+                auto b = std::make_shared<juce::AudioBuffer<float>> (1, len);
+                for (int i = 0; i < len; ++i)
+                    b->setSample (0, i, value >= 0.0f ? value : (float) i / (float) len);
+                auto c = std::make_shared<AudioClip>();
+                c->source = b; c->buffer = b; c->startSample = start;
+                return c;
+            };
+            juce::AudioBuffer<float> out (2, 512);
+            auto renderAt = [&] (juce::int64 pos) -> float
+            {
+                eng.setTransportPosition (pos);
+                eng.play();
+                float* outs[2] = { out.getWritePointer (0), out.getWritePointer (1) };
+                eng.audioDeviceIOCallbackWithContext (nullptr, 0, outs, 2, 512, juce::AudioIODeviceCallbackContext {});
+                eng.stop();
+                return out.getSample (0, 100); // sample at pos + 100
+            };
+            int fails = 0;
+            auto expect = [&fails] (bool ok, const char* what) { std::printf ("  [%s] %s\n", ok ? "ok" : "FAIL", what); if (! ok) ++fails; };
+
+            auto ramp = makeClip (-1.0f, 0, 48000);
+            eng.addClip (*t, ramp);
+            auto right = eng.splitClip (*t, ramp, 20000);
+            expect (right != nullptr && ramp->getLength() == 20000 && right->getOffset() == 20000 && right->getLength() == 28000,
+                    "split makes two clips that share the audio");
+            expect (std::abs (renderAt (30000) - 30100.0f / 48000.0f) < 1.0e-4f, "right half plays the original audio at the same time");
+
+            eng.trimClipStart (*right, 22000);
+            expect (right->startSample.load() == 22000 && right->getOffset() == 22000 && right->getEnd() == 48000, "trim start keeps the end fixed");
+            eng.trimClipEnd (*ramp, 10000);
+            expect (ramp->getLength() == 10000, "trim end shortens the clip");
+            expect (renderAt (15000) == 0.0f, "trimmed gap is silent");
+            expect (std::abs (renderAt (30000) - 30100.0f / 48000.0f) < 1.0e-4f, "audio still lines up after trimming");
+
+            eng.trimClipStart (*right, -100000);
+            expect (right->startSample.load() == 0 && right->getOffset() == 0, "trim can't reveal audio before the file starts");
+            eng.trimClipStart (*right, 22000);
+
+            eng.addClip (*t, makeClip (0.25f, 29000, 5000));
+            t->layerTakes = true;
+            expect (std::abs (renderAt (30000) - (30100.0f / 48000.0f + 0.25f)) < 1.0e-4f, "layer mode: overlapping takes are both heard");
+            t->layerTakes = false;
+            expect (std::abs (renderAt (30000) - 0.25f) < 1.0e-4f, "newest-on-top mode: newest take wins");
+
+            if (fails > 0) { std::printf ("clip editing test FAILED\n"); return 1; }
+        }
+
         // Built-in effects: every factory preset, stereo noise + a tone, must stay finite and not blow up.
         for (const auto& desc : Builtins::getDescriptions())
         {
@@ -144,6 +197,23 @@ public:
 
         auto noToken = api.fetchEntitlement ("not-a-token", good.userId);
         check (! noToken.ok, "entitlement needs a valid token", noToken.error);
+
+        {
+            juce::Image pic (juce::Image::ARGB, 16, 16, true);
+            pic.clear (pic.getBounds(), juce::Colours::purple);
+            juce::MemoryOutputStream pngOut;
+            juce::PNGImageFormat().writeImageToStream (pic, pngOut);
+            juce::MemoryBlock png (pngOut.getData(), pngOut.getDataSize());
+
+            check (api.uploadAvatar (good.accessToken, good.userId, png).isEmpty(), "pro user uploads profile picture", {});
+            auto got = api.downloadAvatar (good.accessToken, good.userId);
+            check (got.ok && got.data == png, "profile picture downloads intact", juce::String ((int) got.data.getSize()) + " bytes");
+            const auto freeErr = api.uploadAvatar (freeUser.accessToken, freeUser.userId, png);
+            check (freeErr.containsIgnoreCase ("Pro"), "free user can't upload a picture", freeErr);
+            check (api.deleteAvatar (good.accessToken, good.userId).isEmpty(), "profile picture deleted", {});
+            auto gone = api.downloadAvatar (good.accessToken, good.userId);
+            check (! gone.ok && gone.notFound, "deleted picture reports not found", gone.error);
+        }
 
         auto refreshed = api.refresh (good.refreshToken);
         check (refreshed.ok && refreshed.accessToken != good.accessToken, "refresh token", {});

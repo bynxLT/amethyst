@@ -1,16 +1,8 @@
-#include "TrackComponent.h"
+﻿#include "TrackComponent.h"
 #include "PluginWindows.h"
 
 namespace
 {
-    void styleToggle (juce::TextButton& b, juce::Colour on, const juce::String& tip)
-    {
-        b.setClickingTogglesState (true);
-        b.setColour (juce::TextButton::buttonOnColourId, on);
-        b.setColour (juce::TextButton::textColourOnId, juce::Colours::black);
-        b.setTooltip (tip);
-    }
-
     void drawBarGrid (juce::Graphics& g, const TimelineView& view, juce::Rectangle<int> lane, double bpm, bool labels)
     {
         const double barSec = 240.0 / juce::jmax (20.0, bpm);
@@ -47,7 +39,8 @@ TrackComponent::TrackComponent (AppContext& c, Track& t) : ctx (c), track (t)
 {
     nameLabel.setText (track.name, juce::dontSendNotification);
     nameLabel.setEditable (false, true);
-    nameLabel.setFont (juce::FontOptions (15.0f, juce::Font::bold));
+    nameLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+    nameLabel.setMinimumHorizontalScale (0.8f);
     nameLabel.setTooltip ("Double-click to rename");
     nameLabel.onTextChange = [this]
     {
@@ -55,49 +48,19 @@ TrackComponent::TrackComponent (AppContext& c, Track& t) : ctx (c), track (t)
     };
     addAndMakeVisible (nameLabel);
 
-    styleToggle (armBtn, Theme::record, "Arm for recording");
-    styleToggle (monBtn, Theme::monitor, "Input monitoring (hear yourself through the FX chain)");
-    styleToggle (muteBtn, Theme::mute, "Mute");
-    styleToggle (soloBtn, Theme::solo, "Solo");
+    onLed.setTooltip ("Track on / off (mute)");
+    onLed.onClick = [this] { track.mute = ! onLed.getToggleState(); };
+    armLed.setTooltip ("Arm for recording");
+    armLed.onClick = [this] { track.armed = armLed.getToggleState(); };
+    addAndMakeVisible (onLed);
+    addAndMakeVisible (armLed);
 
-    armBtn.onClick  = [this] { track.armed = armBtn.getToggleState(); };
-    monBtn.onClick  = [this] { track.monitor = monBtn.getToggleState(); };
-    muteBtn.onClick = [this] { track.mute = muteBtn.getToggleState(); };
-    soloBtn.onClick = [this] { track.solo = soloBtn.getToggleState(); };
+    menuBtn.setTooltip ("Input, monitoring, solo, plug-ins, presets, delete");
+    menuBtn.onClick = [this] { showTrackMenu(); };
+    addAndMakeVisible (menuBtn);
 
-    fxBtn.setTooltip ("Show this channel's plug-in slots in the mixer");
-    fxBtn.onClick = [this] { if (ctx.showInMixer) ctx.showInMixer (&track); };
-
-    presetBtn.setTooltip ("Save or load a channel preset");
-    presetBtn.onClick = [this] { UiHelpers::showPresetMenu (ctx, track, presetBtn, {}); };
-
-    removeBtn.setTooltip ("Delete track");
-    removeBtn.onClick = [this] { if (ctx.removeTrack) ctx.removeTrack (&track); };
-
-    for (auto* b : { &armBtn, &monBtn, &muteBtn, &soloBtn, &fxBtn, &presetBtn, &removeBtn })
-        addAndMakeVisible (b);
-
-    inputBox.setTooltip ("Recording input");
-    inputBox.setTextWhenNoChoicesAvailable ("No inputs enabled");
     inputBox.onChange = [this] { UiHelpers::applyInputSelection (inputBox, track); };
-    addAndMakeVisible (inputBox);
-
-    volume.setSliderStyle (juce::Slider::LinearHorizontal);
-    volume.setRange (-60.0, 12.0, 0.1);
-    volume.setSkewFactorFromMidPoint (-12.0);
-    volume.setDoubleClickReturnValue (true, 0.0);
-    volume.setTextValueSuffix (" dB");
-    volume.setTextBoxStyle (juce::Slider::TextBoxRight, false, 62, 20);
-    volume.onValueChange = [this] { track.volumeDb = (float) volume.getValue(); };
-    addAndMakeVisible (volume);
-
-    pan.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-    pan.setRange (-1.0, 1.0, 0.01);
-    pan.setDoubleClickReturnValue (true, 0.0);
-    pan.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
-    pan.setTooltip ("Pan (double-click to centre)");
-    pan.onValueChange = [this] { track.pan = (float) pan.getValue(); };
-    addAndMakeVisible (pan);
+    addChildComponent (inputBox); // never shown
 
     disableFocusOnChildren (*this);
     refreshInputs();
@@ -153,19 +116,66 @@ void TrackComponent::tick()
     // keep the header in sync with the mixer / presets
     if (! nameLabel.isBeingEdited() && nameLabel.getText() != track.name)
         nameLabel.setText (track.name, juce::dontSendNotification);
-    armBtn.setToggleState (track.armed.load(), juce::dontSendNotification);
-    monBtn.setToggleState (track.monitor.load(), juce::dontSendNotification);
-    muteBtn.setToggleState (track.mute.load(), juce::dontSendNotification);
-    soloBtn.setToggleState (track.solo.load(), juce::dontSendNotification);
-    if (! volume.isMouseButtonDown()) volume.setValue (track.volumeDb.load(), juce::dontSendNotification);
-    if (! pan.isMouseButtonDown())    pan.setValue (track.pan.load(), juce::dontSendNotification);
-
-    const int n = track.countPlugins();
-    const auto fxText = n == 0 ? juce::String ("FX") : "FX " + juce::String (n);
-    if (fxBtn.getButtonText() != fxText)
-        fxBtn.setButtonText (fxText);
+    onLed.setToggleState (! track.mute.load(), juce::dontSendNotification);
+    armLed.setToggleState (track.armed.load(), juce::dontSendNotification);
+    nameLabel.setColour (juce::Label::textColourId, track.mute.load() ? Theme::textDim.withAlpha (0.45f) : Theme::text);
 
     repaint();
+}
+
+void TrackComponent::showTrackMenu()
+{
+    juce::PopupMenu m;
+    m.addSectionHeader (track.name);
+    m.addItem (1, "Arm for recording", true, track.armed.load());
+    m.addItem (2, "Input monitoring (hear yourself)", true, track.monitor.load());
+    m.addItem (3, "Solo", true, track.solo.load());
+    m.addItem (4, "Mute", true, track.mute.load());
+
+    juce::PopupMenu inputs;
+    for (int i = 0; i < inputBox.getNumItems(); ++i)
+        inputs.addItem (1000 + inputBox.getItemId (i), inputBox.getItemText (i), true, inputBox.getSelectedId() == inputBox.getItemId (i));
+    if (inputBox.getNumItems() == 0)
+        inputs.addItem (999, "No inputs enabled - open Audio settings", false, false);
+    m.addSubMenu ("Recording input", inputs);
+
+    m.addSeparator();
+    const int nFx = track.countPlugins();
+    m.addItem (5, "Plug-ins in mixer..." + (nFx > 0 ? "  (" + juce::String (nFx) + ")" : juce::String()));
+    m.addItem (6, "Channel presets...");
+    juce::PopupMenu takes;
+    takes.addItem (8, "Layer - hear every take", true, track.layerTakes.load());
+    takes.addItem (9, "Newest take on top", true, ! track.layerTakes.load());
+    m.addSubMenu ("Overlapping takes", takes);
+    m.addSeparator();
+    m.addItem (7, "Delete track");
+
+    juce::Component::SafePointer<TrackComponent> safe (this);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&menuBtn), [safe] (int r)
+    {
+        if (safe == nullptr || r == 0)
+            return;
+        auto& t = safe->track;
+        if (r >= 1000)
+        {
+            safe->inputBox.setSelectedId (r - 1000, juce::sendNotificationSync);
+            return;
+        }
+        switch (r)
+        {
+            case 1: t.armed = ! t.armed.load(); break;
+            case 2: t.monitor = ! t.monitor.load(); break;
+            case 3: t.solo = ! t.solo.load(); break;
+            case 4: t.mute = ! t.mute.load(); break;
+            case 5: if (safe->ctx.showInMixer) safe->ctx.showInMixer (&t); break;
+            case 6: UiHelpers::showPresetMenu (safe->ctx, t, safe->menuBtn, {}); break;
+            case 7: if (safe->ctx.removeTrack) safe->ctx.removeTrack (&t); break;
+            case 8: t.layerTakes = true; break;
+            case 9: t.layerTakes = false; break;
+            default: break;
+        }
+        safe->tick();
+    });
 }
 
 //==============================================================================
@@ -190,22 +200,45 @@ std::shared_ptr<AudioClip> TrackComponent::clipAt (juce::Point<int> p) const
 
 void TrackComponent::paint (juce::Graphics& g)
 {
-    // Header card
-    auto header = getLocalBounds().withWidth (kHeaderWidth).toFloat().reduced (4.0f, 3.0f);
-    Glass::panel (g, header, 12.0f);
-    if (track.armed)
-    {
-        g.setColour (Theme::record.withAlpha (0.35f));
-        g.fillRoundedRectangle (header.withWidth (8.0f).translated (-1.0f, 0.0f).reduced (0.0f, 10.0f), 3.0f);
-    }
+    // Compact list row
+    auto header = getLocalBounds().withWidth (kHeaderWidth).toFloat().reduced (3.0f, 2.0f);
+    Glass::panel (g, header, 8.0f, track.armed ? 1.4f : 1.0f);
     g.setGradientFill (juce::ColourGradient (track.armed ? Theme::record : Theme::accent, header.getX(), header.getY(),
                                              track.armed ? Theme::record.darker() : Theme::accent2, header.getX(), header.getBottom(), false));
-    g.fillRoundedRectangle (header.withWidth (4.0f).reduced (0.0f, 12.0f), 2.0f);
+    g.fillRoundedRectangle (header.withWidth (3.0f).reduced (0.0f, 8.0f), 1.5f);
 
-    auto meterArea = getLocalBounds().withWidth (kHeaderWidth).removeFromRight (24).reduced (4, 12).toFloat();
-    drawMeter (g, meterArea.removeFromLeft (6), levelL);
-    meterArea.removeFromLeft (2);
-    drawMeter (g, meterArea.removeFromLeft (6), levelR);
+    // status chips under the name: input, monitoring, solo, plug-ins
+    {
+        juce::StringArray chips;
+        if (inputBox.getNumItems() > 0)
+            chips.add (inputBox.getSelectedId() >= 1001 ? "ST " + juce::String (track.inputChannel.load() + 1)
+                                                        : "IN " + juce::String (track.inputChannel.load() + 1));
+        if (track.monitor.load()) chips.add ("MON");
+        if (track.solo.load())    chips.add ("SOLO");
+        if (const int n = track.countPlugins()) chips.add ("FX " + juce::String (n));
+
+        auto chipArea = juce::Rectangle<float> (menuBtn.getRight() + 6.0f, (float) menuBtn.getY(), header.getRight() - menuBtn.getRight() - 24.0f, (float) menuBtn.getHeight());
+        g.setFont (juce::FontOptions (9.5f, juce::Font::bold));
+        for (auto& c : chips)
+        {
+            const float w = 10.0f + 6.0f * (float) c.length();
+            if (w > chipArea.getWidth())
+                break;
+            auto chip = chipArea.removeFromLeft (w).reduced (0.0f, 2.0f);
+            chipArea.removeFromLeft (3.0f);
+            const auto col = c == "MON" ? Theme::monitor : c == "SOLO" ? Theme::solo : Theme::accent;
+            g.setColour (col.withAlpha (0.22f));
+            g.fillRoundedRectangle (chip, 4.0f);
+            g.setColour (col.brighter (0.3f));
+            g.drawText (c, chip.toNearestInt(), juce::Justification::centred);
+        }
+    }
+
+    // slim level meter on the right edge of the row
+    auto meterArea = getLocalBounds().withWidth (kHeaderWidth).removeFromRight (14).reduced (3, 8).toFloat();
+    drawMeter (g, meterArea.removeFromLeft (3.5f), levelL);
+    meterArea.removeFromLeft (1.0f);
+    drawMeter (g, meterArea.removeFromLeft (3.5f), levelR);
 
     // Lane
     const auto lane = laneBounds();
@@ -245,10 +278,27 @@ void TrackComponent::paint (juce::Graphics& g)
         auto it = thumbs.find (clipPtr.get());
         if (it != thumbs.end() && it->second.thumbnail != nullptr)
         {
-            const double t0 = (vx0 - full.getX()) / ctx.view.pixelsPerSecond;
-            const double t1 = (vx1 - full.getX()) / ctx.view.pixelsPerSecond;
+            const double offsetSec = (double) clip.getOffset() / sr;   // trimmed-off start of the audio
+            const double t0 = offsetSec + (vx0 - full.getX()) / ctx.view.pixelsPerSecond;
+            const double t1 = offsetSec + (vx1 - full.getX()) / ctx.view.pixelsPerSecond;
             g.setColour (Theme::wave.withAlpha (0.92f * alpha));
             it->second.thumbnail->drawChannels (g, visible.reduced (0.0f, 8.0f).withTrimmedTop (6.0f).toNearestInt(), t0, t1, 1.0f);
+        }
+
+        // trim handles
+        const bool trimMode = ctx.view.tool == EditTool::Trim;
+        for (int side : { -1, 1 })
+        {
+            const bool hot = (hoverEdgeClip == clipPtr.get() && hoverEdgeSide == side)
+                             || (isDragged && ((side < 0 && dragMode == Drag::TrimStart) || (side > 0 && dragMode == Drag::TrimEnd)));
+            if (! hot && ! trimMode)
+                continue;
+            const float ex = side < 0 ? full.getX() : full.getRight();
+            if (ex < (float) lane.getX() || ex > (float) lane.getRight())
+                continue;
+            auto handle = juce::Rectangle<float> (side < 0 ? ex : ex - 5.0f, full.getY() + 6.0f, 5.0f, full.getHeight() - 12.0f);
+            g.setColour ((hot ? Theme::accent2 : Theme::wave).withAlpha (hot ? 0.95f : 0.45f));
+            g.fillRoundedRectangle (handle, 2.0f);
         }
 
         g.setColour (Theme::text.withAlpha (0.9f * alpha));
@@ -279,6 +329,15 @@ void TrackComponent::paint (juce::Graphics& g)
                     juce::Justification::centredLeft);
     }
 
+    // cut-tool preview
+    if (ctx.view.tool == EditTool::Cut && hoverX >= (float) lane.getX())
+    {
+        g.setColour (Theme::accent2.withAlpha (0.3f));
+        g.fillRect (juce::Rectangle<float> (hoverX - 2.0f, (float) lane.getY() + 3.0f, 5.0f, (float) lane.getHeight() - 6.0f));
+        g.setColour (Theme::accent2);
+        g.drawVerticalLine ((int) hoverX, (float) lane.getY() + 3.0f, (float) lane.getBottom() - 3.0f);
+    }
+
     const float px = ctx.view.timeToX ((double) ctx.engine.getTransportPosition() / sr, lane);
     g.setColour (Theme::accent2.withAlpha (0.25f));
     g.fillRect (juce::Rectangle<float> (px - 2.0f, (float) lane.getY(), 5.0f, (float) lane.getHeight()));
@@ -288,86 +347,200 @@ void TrackComponent::paint (juce::Graphics& g)
 
 void TrackComponent::resized()
 {
-    auto r = getLocalBounds().withWidth (kHeaderWidth).reduced (10, 8);
-    r.removeFromRight (20); // meter
+    auto r = getLocalBounds().withWidth (kHeaderWidth).reduced (8, 6);
+    r.removeFromRight (12); // meter
 
-    auto row1 = r.removeFromTop (26);
-    removeBtn.setBounds (row1.removeFromRight (26));
-    row1.removeFromRight (6);
-    presetBtn.setBounds (row1.removeFromRight (58));
-    row1.removeFromRight (4);
-    fxBtn.setBounds (row1.removeFromRight (46));
-    row1.removeFromRight (8);
-    for (auto* b : { &soloBtn, &muteBtn, &monBtn, &armBtn })
-    {
-        b->setBounds (row1.removeFromRight (26));
-        row1.removeFromRight (3);
-    }
-    nameLabel.setBounds (row1);
+    auto row1 = r.removeFromTop (22);
+    onLed.setBounds (row1.removeFromRight (20));
+    row1.removeFromRight (2);
+    armLed.setBounds (row1.removeFromRight (20));
+    nameLabel.setBounds (row1.withTrimmedLeft (-4));
 
-    r.removeFromTop (8);
-    auto row2 = r.removeFromTop (28);
-    pan.setBounds (row2.removeFromRight (34));
-    row2.removeFromRight (6);
-    inputBox.setBounds (row2.removeFromLeft (150));
-    row2.removeFromLeft (8);
-    volume.setBounds (row2);
+    r.removeFromTop (2);
+    menuBtn.setBounds (r.removeFromTop (20).withWidth (30));
+    inputBox.setBounds (0, 0, 10, 10);
 }
 
 //==============================================================================
+int TrackComponent::edgeAt (const AudioClip& clip, juce::Point<int> p) const
+{
+    const auto b = clipBounds (clip);
+    if (! b.expanded (2.0f, 0.0f).contains (p.toFloat()))
+        return 0;
+    const float zone = juce::jmin (8.0f, b.getWidth() * 0.25f);
+    if ((float) p.x <= b.getX() + zone)     return -1;
+    if ((float) p.x >= b.getRight() - zone) return 1;
+    return 0;
+}
+
+juce::int64 TrackComponent::sampleAtX (int x, bool snap) const
+{
+    double t = timeAtX (x);
+    if (snap) // Shift snaps to beats
+    {
+        const double beat = 60.0 / juce::jmax (20.0, ctx.engine.bpm.load());
+        t = std::round (t / beat) * beat;
+    }
+    return (juce::int64) std::llround (juce::jmax (0.0, t) * ctx.engine.getSampleRate());
+}
+
+void TrackComponent::splitAt (const std::shared_ptr<AudioClip>& clip, juce::int64 at)
+{
+    if (ctx.engine.splitClip (track, clip, at) != nullptr)
+        repaint();
+}
+
 void TrackComponent::mouseDown (const juce::MouseEvent& e)
 {
+    dragMode = Drag::None;
     if (! isInLane (e.getPosition()))
         return;
 
-    if (auto clip = clipAt (e.getPosition()))
-    {
-        if (e.mods.isPopupMenu())
-        {
-            showClipMenu (clip);
-            return;
-        }
+    auto clip = clipAt (e.getPosition());
 
-        draggingClip = clip;
-        const double sr = juce::jmax (1.0, ctx.engine.getSampleRate());
-        dragGrabOffsetSec = timeAtX (e.x) - (double) clip->startSample.load() / sr;
+    if (e.mods.isPopupMenu())
+    {
+        if (clip != nullptr) showClipMenu (clip, sampleAtX (e.x, false));
+        else                 showLaneMenu();
         return;
     }
 
-    if (! e.mods.isPopupMenu())
+    if (clip == nullptr)
+    {
         ctx.engine.setTransportPosition ((juce::int64) (timeAtX (e.x) * ctx.engine.getSampleRate()));
+        return;
+    }
+
+    switch (ctx.view.tool)
+    {
+        case EditTool::Cut:
+            splitAt (clip, sampleAtX (e.x, e.mods.isShiftDown()));
+            return;
+
+        case EditTool::Trim:
+        {
+            // whichever half you grab is the edge you move
+            const auto b = clipBounds (*clip);
+            dragMode = (float) e.x < b.getCentreX() ? Drag::TrimStart : Drag::TrimEnd;
+            break;
+        }
+
+        case EditTool::Move:
+        default:
+        {
+            const int edge = edgeAt (*clip, e.getPosition()); // edges trim even with the Move tool
+            dragMode = edge < 0 ? Drag::TrimStart : (edge > 0 ? Drag::TrimEnd : Drag::Move);
+            break;
+        }
+    }
+
+    draggingClip = clip;
+    const double sr = juce::jmax (1.0, ctx.engine.getSampleRate());
+    dragGrabOffsetSec = timeAtX (e.x) - (double) clip->startSample.load() / sr;
 }
 
 void TrackComponent::mouseDrag (const juce::MouseEvent& e)
 {
-    if (auto clip = draggingClip.lock())
+    auto clip = draggingClip.lock();
+    if (clip == nullptr)
+        return;
+
+    const bool snap = e.mods.isShiftDown();
+
+    switch (dragMode)
     {
-        const double sr = juce::jmax (1.0, ctx.engine.getSampleRate());
-        double newStart = ctx.view.startSeconds + ((double) e.x - laneBounds().getX()) / ctx.view.pixelsPerSecond - dragGrabOffsetSec;
-
-        // Hold Shift to snap to beats
-        if (e.mods.isShiftDown())
+        case Drag::TrimStart: ctx.engine.trimClipStart (*clip, sampleAtX (e.x, snap)); break;
+        case Drag::TrimEnd:   ctx.engine.trimClipEnd (*clip, sampleAtX (e.x, snap));   break;
+        case Drag::Move:
         {
-            const double beat = 60.0 / juce::jmax (20.0, ctx.engine.bpm.load());
-            newStart = std::round (newStart / beat) * beat;
+            const double sr = juce::jmax (1.0, ctx.engine.getSampleRate());
+            double newStart = timeAtX (e.x) - dragGrabOffsetSec;
+            if (snap)
+            {
+                const double beat = 60.0 / juce::jmax (20.0, ctx.engine.bpm.load());
+                newStart = std::round (newStart / beat) * beat;
+            }
+            clip->startSample = (juce::int64) std::llround (juce::jmax (0.0, newStart) * sr);
+            break;
         }
+        case Drag::None: break;
+    }
+    repaint();
+}
 
-        clip->startSample = (juce::int64) std::llround (juce::jmax (0.0, newStart) * sr);
-        setMouseCursor (juce::MouseCursor::DraggingHandCursor);
+void TrackComponent::mouseUp (const juce::MouseEvent& e)
+{
+    draggingClip.reset();
+    dragMode = Drag::None;
+    updateCursor (e.getPosition());
+}
+
+void TrackComponent::updateCursor (juce::Point<int> p)
+{
+    const AudioClip* edgeClip = nullptr;
+    int edgeSide = 0;
+    auto clip = isInLane (p) ? clipAt (p) : nullptr;
+    auto cursorType = juce::MouseCursor::NormalCursor;
+    float newHover = -1.0f;
+
+    if (clip != nullptr)
+    {
+        switch (ctx.view.tool)
+        {
+            case EditTool::Cut:
+                cursorType = juce::MouseCursor::CrosshairCursor;
+                newHover = (float) p.x;
+                break;
+            case EditTool::Trim:
+                cursorType = juce::MouseCursor::LeftRightResizeCursor;
+                edgeClip = clip.get();
+                edgeSide = (float) p.x < clipBounds (*clip).getCentreX() ? -1 : 1;
+                break;
+            case EditTool::Move:
+            default:
+                edgeSide = edgeAt (*clip, p);
+                edgeClip = edgeSide != 0 ? clip.get() : nullptr;
+                cursorType = edgeSide != 0 ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::DraggingHandCursor;
+                break;
+        }
+    }
+
+    setMouseCursor (cursorType);
+    if (newHover != hoverX || edgeClip != hoverEdgeClip || edgeSide != hoverEdgeSide)
+    {
+        hoverX = newHover;
+        hoverEdgeClip = edgeClip;
+        hoverEdgeSide = edgeSide;
         repaint();
     }
 }
 
-void TrackComponent::mouseUp (const juce::MouseEvent&)
-{
-    draggingClip.reset();
-    setMouseCursor (juce::MouseCursor::NormalCursor);
-}
-
 void TrackComponent::mouseMove (const juce::MouseEvent& e)
 {
-    setMouseCursor (clipAt (e.getPosition()) != nullptr ? juce::MouseCursor::DraggingHandCursor
-                                                         : juce::MouseCursor::NormalCursor);
+    updateCursor (e.getPosition());
+}
+
+void TrackComponent::mouseExit (const juce::MouseEvent&)
+{
+    hoverX = -1.0f;
+    hoverEdgeClip = nullptr;
+    hoverEdgeSide = 0;
+    repaint();
+}
+
+void TrackComponent::showLaneMenu()
+{
+    juce::PopupMenu m;
+    m.addSectionHeader ("Overlapping takes on " + track.name);
+    m.addItem (1, "Layer - hear every take", true, track.layerTakes.load());
+    m.addItem (2, "Newest take on top", true, ! track.layerTakes.load());
+
+    juce::Component::SafePointer<TrackComponent> safe (this);
+    m.showMenuAsync (juce::PopupMenu::Options(), [safe] (int r)
+    {
+        if (safe != nullptr && r > 0)
+            safe->track.layerTakes = (r == 1);
+    });
 }
 
 void TrackComponent::mouseDoubleClick (const juce::MouseEvent& e)
@@ -377,35 +550,64 @@ void TrackComponent::mouseDoubleClick (const juce::MouseEvent& e)
             ctx.openClipEditor (&track, clip);
 }
 
-void TrackComponent::showClipMenu (std::shared_ptr<AudioClip> clip)
+void TrackComponent::showClipMenu (std::shared_ptr<AudioClip> clip, juce::int64 clickSample)
 {
+    const auto playhead = ctx.engine.getTransportPosition();
+    const bool playheadInside = playhead > clip->startSample.load() && playhead < clip->getEnd();
+    const bool trimmed = clip->getOffset() > 0 || clip->trimLength.load() >= 0;
+
     juce::PopupMenu m;
     m.addSectionHeader (clip->file.getFileName());
     m.addItem (4, "Clip properties...  (double-click)");
     m.addItem (5, "Enabled", true, clip->enabled.load());
     m.addSeparator();
+    m.addItem (6, "Split here");
+    m.addItem (7, "Split at playhead", playheadInside);
+    m.addItem (8, "Trim start to playhead", playheadInside);
+    m.addItem (9, "Trim end to playhead", playheadInside);
+    m.addItem (10, "Restore full length (undo trims)", trimmed);
+    m.addSeparator();
     m.addItem (1, "Delete clip");
     m.addItem (2, "Show file in Explorer");
     m.addItem (3, "Move to playhead");
+    m.addSeparator();
+    juce::PopupMenu takes;
+    takes.addItem (11, "Layer - hear every take", true, track.layerTakes.load());
+    takes.addItem (12, "Newest take on top", true, ! track.layerTakes.load());
+    m.addSubMenu ("Overlapping takes", takes);
 
     std::weak_ptr<AudioClip> weak = clip;
     juce::Component::SafePointer<TrackComponent> safe (this);
-    m.showMenuAsync (juce::PopupMenu::Options(), [safe, weak] (int result)
+    m.showMenuAsync (juce::PopupMenu::Options(), [safe, weak, clickSample, playhead] (int result)
     {
         auto c = weak.lock();
         if (safe == nullptr || c == nullptr)
             return;
+        auto& engine = safe->ctx.engine;
 
-        if (result == 1)
-            safe->ctx.engine.removeClip (safe->track, c.get());
-        else if (result == 2)
-            c->file.revealToUser();
-        else if (result == 3)
-            c->startSample = safe->ctx.engine.getTransportPosition();
-        else if (result == 4 && safe->ctx.openClipEditor)
-            safe->ctx.openClipEditor (&safe->track, c);
-        else if (result == 5)
-            c->enabled = ! c->enabled.load();
+        switch (result)
+        {
+            case 1:  engine.removeClip (safe->track, c.get()); break;
+            case 2:  c->file.revealToUser(); break;
+            case 3:  c->startSample = playhead; break;
+            case 4:  if (safe->ctx.openClipEditor) safe->ctx.openClipEditor (&safe->track, c); break;
+            case 5:  c->enabled = ! c->enabled.load(); break;
+            case 6:  safe->splitAt (c, clickSample); break;
+            case 7:  safe->splitAt (c, playhead); break;
+            case 8:  engine.trimClipStart (*c, playhead); break;
+            case 9:  engine.trimClipEnd (*c, playhead); break;
+            case 10:
+            {
+                const auto originalStart = c->startSample.load() - c->getOffset();
+                engine.trimClipStart (*c, originalStart);
+                engine.trimClipEnd (*c, originalStart + c->getBufferLength());
+                break;
+            }
+            case 11: safe->track.layerTakes = true; break;
+            case 12: safe->track.layerTakes = false; break;
+            default: break;
+        }
+        safe->repaint();
     });
 }
 
@@ -415,9 +617,6 @@ void RulerComponent::paint (juce::Graphics& g)
     auto lane = getLocalBounds().withTrimmedLeft (kHeaderWidth);
     Glass::panel (g, lane.toFloat().reduced (2.0f, 2.0f), 8.0f, 0.8f);
 
-    g.setColour (Theme::textDim);
-    g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
-    g.drawText ("ZOOM", getLocalBounds().withWidth (kHeaderWidth).reduced (16, 0), juce::Justification::centredLeft);
     lane = lane.reduced (2, 2);
 
     juce::Graphics::ScopedSaveState s (g);

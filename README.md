@@ -36,12 +36,39 @@ The app is ad-hoc signed, not notarised. Because of that, the first time you ope
 - Takes are saved as 24-bit WAV files in `Documents\AMETHYST\Takes`. Each take is moved back by the device's reported round-trip latency so it lines up with the backing track. A new take is added on top of any older ones.
 - **Click** turns the metronome on (it follows the BPM). Plug-ins also get the tempo and transport position, so tempo-synced delays work.
 
+## Tracks and editing
+
+**Track list.** New sessions start with 8 slim track rows. Each row has:
+- the track name (double-click to rename)
+- a red **record-arm** light and an **on/off** light (mute)
+- a **...** menu with recording input, input monitoring, solo, plug-ins in the mixer, channel presets, overlapping takes, and delete
+- small chips that show the current input, MON, SOLO, and the number of FX
+
+Volume and pan are in the **Mixer** (Tab key).
+
+**Tools** (top-left above the tracks):
+- **Move (V):** drag a clip to move it. Drag either edge of a clip to trim it.
+- **Trim (T):** grab the left half of a clip to trim its start, or the right half to trim its end.
+- **Cut (C):** click a clip to split it there. A preview line shows where the cut will go.
+- Hold **Shift** while moving, trimming or cutting to snap to beats.
+
+Trimming is non-destructive: drag an edge back out, or right-click a clip → **Restore full length**. Right-click a clip for:
+- Split here / Split at playhead
+- Trim start or end to playhead
+- Delete
+- Clip properties
+
+Cut and trimmed edges get tiny automatic fades, so they don't click.
+
+**Recording over old takes.** Earlier takes on a track keep playing while you record a new one, so you can hear what you're doubling. Afterwards, overlapping takes are **layered** (you hear all of them) by default. Switch a track to **Newest take on top** from its **...** menu, or by right-clicking its lane.
+
 ## Accounts and AMETHYST Pro
 
 The 10 built-in AMETHYST effects are **Pro** features. Everything else is free: recording, mixing, VST3s, clip effects, presets and export.
 
 - The **Sign in** button (top right) opens the account window. From there you can sign in, create an account, reset your password, refresh your plan, or sign out.
 - When signed in, the button shows **FREE** or **PRO**.
+- **Profile pictures (Pro only):** in the account window, **Change picture...** lets you pick a PNG or JPG. It's cropped to a circle, uploaded to your account, and shown in the toolbar. Free accounts see their initial instead.
 - Free users see the built-in effects with a **PRO** padlock badge. Adding one opens the upgrade prompt.
 - If a project or channel preset uses a Pro effect, it opens without that effect and shows a message saying so.
 - The session is saved encrypted with Windows DPAPI, so it only works for your Windows user. Pro keeps working offline for 7 days after the last successful check. The app re-checks your plan every 30 minutes.
@@ -49,7 +76,7 @@ The 10 built-in AMETHYST effects are **Pro** features. Everything else is free: 
 ### Setting up Supabase
 
 1. Create a Supabase project. Under **Authentication → Providers**, make sure Email is enabled. Leaving "Confirm email" on is fine, because the app handles it.
-2. Open the **SQL editor** and run `supabase/migrations/20261124000000_entitlements.sql`. It creates an `entitlements` table with row-level security: users can read their own row but can't change it. It also adds a trigger that gives every new user a free row.
+2. Open the **SQL editor** and run `supabase/migrations/20261124000000_entitlements.sql`. Then run `supabase/migrations/20261124010000_avatars.sql`, which sets up **profile pictures**: a private `avatars` storage bucket where only active Pro users can upload, enforced by the database. It creates an `entitlements` table with row-level security: users can read their own row but can't change it. It also adds a trigger that gives every new user a free row.
 3. Copy `config/supabase.example.json` to `config/supabase.json` (this file is gitignored). Fill in your **Project URL** and **anon / publishable key** from Project Settings → API. Never use the `service_role` key here.
 4. Rebuild. CMake prints `AMETHYST: Supabase configured`.
 

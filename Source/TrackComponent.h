@@ -22,6 +22,7 @@ public:
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;
     void mouseMove (const juce::MouseEvent&) override;
+    void mouseExit (const juce::MouseEvent&) override;
     void mouseDoubleClick (const juce::MouseEvent&) override;
 
 private:
@@ -34,17 +35,29 @@ private:
     juce::Rectangle<int> laneBounds() const { return getLocalBounds().withTrimmedLeft (kHeaderWidth); }
     juce::Rectangle<float> clipBounds (const AudioClip&) const;
     std::shared_ptr<AudioClip> clipAt (juce::Point<int>) const;
+    int edgeAt (const AudioClip&, juce::Point<int>) const;   // -1 left edge, +1 right edge, 0 none
+    juce::int64 sampleAtX (int x, bool snap) const;
+    void updateCursor (juce::Point<int>);
     void syncThumbnails();
-    void showClipMenu (std::shared_ptr<AudioClip>);
+    void showClipMenu (std::shared_ptr<AudioClip>, juce::int64 clickSample);
+    void showLaneMenu();
+    void splitAt (const std::shared_ptr<AudioClip>&, juce::int64 at);
+
+    enum class Drag { None, Move, TrimStart, TrimEnd };
+    Drag dragMode = Drag::None;
+    float hoverX = -1.0f;                     // cut-tool preview line
+    const AudioClip* hoverEdgeClip = nullptr; // trim handle highlight
+    int hoverEdgeSide = 0;
 
     AppContext& ctx;
     Track& track;
 
+    // Compact list-style header: name, on/off + record-arm lights, "..." menu.
     juce::Label nameLabel;
-    juce::TextButton armBtn { "R" }, monBtn { "I" }, muteBtn { "M" }, soloBtn { "S" };
-    juce::TextButton fxBtn { "FX" }, presetBtn { "Preset" }, removeBtn { "X" };
-    juce::ComboBox inputBox;
-    juce::Slider volume, pan;
+    LedButton onLed { Theme::ledOn }, armLed { Theme::record };
+    juce::TextButton menuBtn { "..." };
+    juce::ComboBox inputBox;   // hidden; holds the device's input list for the menu
+    void showTrackMenu();
 
     std::map<const AudioClip*, Thumb> thumbs;
     std::weak_ptr<AudioClip> draggingClip;

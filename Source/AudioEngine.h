@@ -61,6 +61,12 @@ public:
     std::shared_ptr<AudioClip> loadClip (const juce::File&, juce::int64 startSample);
     void addClip (Track&, std::shared_ptr<AudioClip>);
     std::shared_ptr<AudioClip> removeClip (Track&, const AudioClip*);
+
+    // Non-destructive editing. Times are timeline samples.
+    void trimClipStart (AudioClip&, juce::int64 newStart);   // keeps the end where it is
+    void trimClipEnd (AudioClip&, juce::int64 newEnd);       // keeps the start where it is
+    std::shared_ptr<AudioClip> splitClip (Track&, const std::shared_ptr<AudioClip>&, juce::int64 at); // returns the new right-hand clip
+    static constexpr int minClipSamples = 256;
     bool canImport (const juce::File&);
     bool replaceClipSource (AudioClip&, const juce::File&);
 

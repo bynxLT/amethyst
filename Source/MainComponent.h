@@ -76,11 +76,13 @@ private:
     juce::TextButton arrangeBtn { "Arrange" }, mixerBtn { "Mixer" };
     juce::TextButton openBtn { "Open" }, saveBtn { "Save" }, exportBtn { "Export" };
     juce::TextButton audioBtn { "Audio" }, pluginsBtn { "Plug-ins" };
-    juce::TextButton accountBtn { "Sign in" };
+    AccountBadge accountBtn;   // profile picture + plan
     int accountRecheckTicks = 0;
     void updateAccountButton();
     LabeledKnob masterK { "Master", -60.0, 12.0, 0.0, " dB", 0.1, -12.0 };
     juce::Slider zoomSlider;
+    juce::TextButton moveToolBtn { "Move" }, trimToolBtn { "Trim" }, cutToolBtn { "Cut" };
+    void setTool (EditTool);
     juce::Rectangle<int> masterMeterArea, logoArea;
     std::vector<juce::Rectangle<int>> toolbarGroups;
     bool showWordmark = true;

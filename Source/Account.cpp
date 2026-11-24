@@ -22,6 +22,13 @@ SupabaseApi::SupabaseApi (juce::String projectUrl, juce::String anonKey)
 SupabaseApi::Response SupabaseApi::send (const juce::String& method, const juce::String& path,
                                           const juce::String& body, const juce::String& bearer) const
 {
+    juce::MemoryBlock bytes (body.toRawUTF8(), body.getNumBytesAsUTF8());
+    return sendBytes (method, path, body.isNotEmpty() ? &bytes : nullptr, "application/json", bearer, "Accept: application/json\r\n");
+}
+
+SupabaseApi::Response SupabaseApi::sendBytes (const juce::String& method, const juce::String& path, const juce::MemoryBlock* body,
+                                               const juce::String& contentType, const juce::String& bearer, const juce::String& extraHeaders) const
+{
     Response r;
     if (! isConfigured())
     {
@@ -30,19 +37,20 @@ SupabaseApi::Response SupabaseApi::send (const juce::String& method, const juce:
     }
 
     juce::URL u (url + path);
-    if (body.isNotEmpty())
-        u = u.withPOSTData (body);
+    if (body != nullptr && body->getSize() > 0)
+        u = u.withPOSTData (*body);
 
     juce::String headers;
-    headers << "apikey: " << key << "\r\n"
-            << "Content-Type: application/json\r\n"
-            << "Accept: application/json\r\n";
+    headers << "apikey: " << key << "\r\n";
+    if (contentType.isNotEmpty())
+        headers << "Content-Type: " << contentType << "\r\n";
     if (bearer.isNotEmpty())
         headers << "Authorization: Bearer " << bearer << "\r\n";
+    headers << extraHeaders;
 
     auto options = juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)
                        .withExtraHeaders (headers)
-                       .withConnectionTimeoutMs (15000)
+                       .withConnectionTimeoutMs (20000)
                        .withStatusCode (&r.status)
                        .withHttpRequestCmd (method);
 
@@ -53,10 +61,58 @@ SupabaseApi::Response SupabaseApi::send (const juce::String& method, const juce:
         return r;
     }
 
-    const auto text = stream->readEntireStreamAsString();
-    if (text.isNotEmpty())
-        r.json = juce::JSON::parse (text);
+    stream->readIntoMemoryBlock (r.raw);
+    if (r.raw.getSize() > 0)
+    {
+        const auto first = static_cast<const char*> (r.raw.getData())[0];
+        if (first == '{' || first == '[')
+            r.json = juce::JSON::parse (r.raw.toString());
+    }
     return r;
+}
+
+namespace
+{
+    juce::String avatarPath (const juce::String& userId)
+    {
+        return "avatars/" + juce::URL::addEscapeChars (userId, true) + "/avatar.png";
+    }
+}
+
+juce::String SupabaseApi::uploadAvatar (const juce::String& accessToken, const juce::String& userId, const juce::MemoryBlock& png) const
+{
+    const auto r = sendBytes ("POST", "/storage/v1/object/" + avatarPath (userId), &png, "image/png", accessToken,
+                              "x-upsert: true\r\nCache-Control: max-age=60\r\n");
+    if (r.status >= 200 && r.status < 300)
+        return {};
+    if (r.status == 403 || r.status == 401 || errorText (r).containsIgnoreCase ("row-level security"))
+        return "Profile pictures are part of AMETHYST Pro.";
+    return errorText (r);
+}
+
+SupabaseApi::Blob SupabaseApi::downloadAvatar (const juce::String& accessToken, const juce::String& userId) const
+{
+    Blob b;
+    const auto r = sendBytes ("GET", "/storage/v1/object/authenticated/" + avatarPath (userId), nullptr, {}, accessToken, {});
+    b.networkError = r.networkError.isNotEmpty();
+
+    if (r.status == 200 && r.raw.getSize() > 0 && ! r.json.isObject())
+    {
+        b.ok = true;
+        b.data = r.raw;
+        return b;
+    }
+
+    const auto code = r.json.getProperty ("statusCode", {}).toString();
+    b.notFound = r.status == 404 || code == "404" || errorText (r).containsIgnoreCase ("not found");
+    b.error = errorText (r);
+    return b;
+}
+
+juce::String SupabaseApi::deleteAvatar (const juce::String& accessToken, const juce::String& userId) const
+{
+    const auto r = sendBytes ("DELETE", "/storage/v1/object/" + avatarPath (userId), nullptr, {}, accessToken, {});
+    return (r.status >= 200 && r.status < 300) || r.status == 404 ? juce::String() : errorText (r);
 }
 
 juce::String SupabaseApi::errorText (const Response& r)
@@ -230,6 +286,8 @@ void Account::clearSession()
     plan.clear();
     proUntil = {};
     lastVerified = {};
+    avatar = {};
+    avatarCacheFile().deleteFile();
     save();
 }
 
@@ -329,6 +387,119 @@ void Account::checkEntitlement()
         lastVerified = juce::Time::getCurrentTime();
         save();
         status = pro ? "AMETHYST Pro is active. Enjoy!" : "You're on the Free plan.";
+        if (pro)
+            fetchAvatar();
+    });
+}
+
+//==============================================================================
+juce::File Account::avatarCacheFile() const
+{
+    return settings.getFile().getSiblingFile ("avatar.png");
+}
+
+void Account::fetchAvatar()
+{
+    if (accessToken.isEmpty() || userId.isEmpty())
+        return;
+
+    auto apiCopy = api;
+    const auto token = accessToken, uid = userId;
+    runAsync<SupabaseApi::Blob> ([apiCopy, token, uid] { return apiCopy.downloadAvatar (token, uid); },
+                                 [this] (const SupabaseApi::Blob& b)
+    {
+        if (b.ok)
+        {
+            auto img = juce::ImageFileFormat::loadFrom (b.data.getData(), b.data.getSize());
+            if (img.isValid())
+            {
+                avatar = img;
+                avatarCacheFile().replaceWithData (b.data.getData(), b.data.getSize());
+            }
+        }
+        else if (b.notFound)
+        {
+            avatar = {};
+            avatarCacheFile().deleteFile();
+        }
+        // network errors: keep the cached picture
+    });
+}
+
+void Account::setAvatarFromFile (const juce::File& imageFile)
+{
+    if (! isPro())
+    {
+        status = "Profile pictures are part of AMETHYST Pro.";
+        sendChangeMessage();
+        return;
+    }
+    if (accessToken.isEmpty() || juce::Time::getCurrentTime() > accessExpiry)
+    {
+        status = "Reconnecting to your account - try again in a moment.";
+        restoreSession();
+        return;
+    }
+
+    auto img = juce::ImageFileFormat::loadFrom (imageFile);
+    if (! img.isValid())
+    {
+        status = "That file isn't an image AMETHYST can read (use PNG or JPG).";
+        sendChangeMessage();
+        return;
+    }
+
+    // centre-crop to a square and shrink to 256 x 256
+    const int side = juce::jmin (img.getWidth(), img.getHeight());
+    auto square = img.getClippedImage ({ (img.getWidth() - side) / 2, (img.getHeight() - side) / 2, side, side })
+                     .rescaled (256, 256, juce::Graphics::highResamplingQuality);
+
+    juce::MemoryOutputStream out;
+    juce::PNGImageFormat png;
+    if (! png.writeImageToStream (square, out))
+    {
+        status = "Couldn't prepare that picture.";
+        sendChangeMessage();
+        return;
+    }
+    juce::MemoryBlock data (out.getData(), out.getDataSize());
+
+    status = "Uploading your picture...";
+    auto apiCopy = api;
+    const auto token = accessToken, uid = userId;
+    runAsync<juce::String> ([apiCopy, token, uid, data] { return apiCopy.uploadAvatar (token, uid, data); },
+                            [this, square, data] (const juce::String& err)
+    {
+        if (err.isNotEmpty())
+        {
+            status = err;
+            return;
+        }
+        avatar = square;
+        avatarCacheFile().replaceWithData (data.getData(), data.getSize());
+        status = "Profile picture updated.";
+    });
+}
+
+void Account::removeAvatar()
+{
+    if (accessToken.isEmpty() || userId.isEmpty())
+        return;
+
+    status = "Removing your picture...";
+    auto apiCopy = api;
+    const auto token = accessToken, uid = userId;
+    runAsync<juce::String> ([apiCopy, token, uid] { return apiCopy.deleteAvatar (token, uid); },
+                            [this] (const juce::String& err)
+    {
+        if (err.isNotEmpty())
+        {
+            status = err;
+            return;
+        }
+        avatar = {};
+        avatarCacheFile().deleteFile();
+        status = "Profile picture removed.";
     });
 }
 
@@ -426,4 +597,7 @@ void Account::load()
     plan = v.getProperty ("plan", {}).toString();
     proUntil = juce::Time ((juce::int64) v.getProperty ("proUntil", 0));
     lastVerified = juce::Time ((juce::int64) v.getProperty ("verified", 0));
+
+    if (refreshToken.isNotEmpty() && avatarCacheFile().existsAsFile())
+        avatar = juce::ImageFileFormat::loadFrom (avatarCacheFile()); // shows instantly; refreshed after sign-in check
 }

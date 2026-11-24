@@ -5,16 +5,19 @@
 
 class PluginWindowManager;
 
-constexpr int kHeaderWidth = 440;
-constexpr int kTrackHeight = 96;
+constexpr int kHeaderWidth = 220;   // compact list-style track headers
+constexpr int kTrackHeight = 60;
 constexpr int kMixerStripWidth = 76;
 constexpr int kSlotPanelWidth = 330;
 constexpr int kBrowserWidth = 230;
+
+enum class EditTool { Move, Trim, Cut };
 
 struct TimelineView
 {
     double pixelsPerSecond = 40.0;
     double startSeconds = 0.0;
+    EditTool tool = EditTool::Move;
 
     float timeToX (double seconds, juce::Rectangle<int> lane) const
     {

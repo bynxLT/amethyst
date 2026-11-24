@@ -19,14 +19,31 @@ struct AudioClip
 
     BufferPtr source;                          // decoded file, resampled to the device rate (message thread)
     BufferPtr buffer;                          // rendered with `settings`; what plays (swapped under the engine lock)
-    std::atomic<juce::int64> startSample { 0 };
+    std::atomic<juce::int64> startSample { 0 };  // timeline position of the first *played* sample
+    std::atomic<juce::int64> trimOffset { 0 };   // samples skipped at the start of `buffer` (non-destructive trim)
+    std::atomic<juce::int64> trimLength { -1 };  // samples played; -1 = to the end of `buffer`
     std::atomic<bool> enabled { true };
     juce::File file;
 
     ClipSettings settings;                     // message thread only
     int renderGeneration = 0;                  // message thread only
 
-    juce::int64 getLength() const noexcept { return buffer != nullptr ? buffer->getNumSamples() : 0; }
+    juce::int64 getBufferLength() const noexcept { return buffer != nullptr ? buffer->getNumSamples() : 0; }
+
+    juce::int64 getOffset() const noexcept
+    {
+        return juce::jlimit<juce::int64> (0, juce::jmax<juce::int64> (0, getBufferLength() - 1), trimOffset.load());
+    }
+
+    // Number of samples that actually play (after trimming).
+    juce::int64 getLength() const noexcept
+    {
+        const auto available = getBufferLength() - getOffset();
+        const auto len = trimLength.load();
+        return juce::jmax<juce::int64> (0, len < 0 ? available : juce::jmin (len, available));
+    }
+
+    juce::int64 getEnd() const noexcept { return startSample.load() + getLength(); }
 };
 
 // A mixer channel (+ timeline lane for normal tracks). The master bus is also a Track.
@@ -62,6 +79,7 @@ public:
     std::atomic<float> volumeDb { 0.0f };
     std::atomic<float> pan { 0.0f };          // -1 (L) .. +1 (R)
     std::atomic<bool>  mute { false }, solo { false }, armed { false }, monitor { false };
+    std::atomic<bool>  layerTakes { true };    // overlapping clips: true = hear all, false = newest on top
     std::atomic<int>   inputChannel { 0 };     // index into the device's *active* input channels
     std::atomic<bool>  stereoInput { false };
 

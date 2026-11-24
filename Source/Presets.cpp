@@ -157,6 +157,7 @@ namespace ProjectIO
             tx->setAttribute ("mute", t->mute.load());
             tx->setAttribute ("solo", t->solo.load());
             tx->setAttribute ("monitor", t->monitor.load());
+            tx->setAttribute ("layerTakes", t->layerTakes.load());
             tx->addChildElement (ChannelPresets::toXml (*t, t->name).release());
 
             for (auto& clip : t->clips)
@@ -164,6 +165,10 @@ namespace ProjectIO
                 auto* cx = tx->createNewChildElement ("CLIP");
                 cx->setAttribute ("file", clip->file.getFullPathName());
                 cx->setAttribute ("startSeconds", (double) clip->startSample.load() / sr);
+                if (clip->getOffset() > 0)
+                    cx->setAttribute ("trimOffsetSeconds", (double) clip->getOffset() / sr);
+                if (clip->trimLength.load() >= 0)
+                    cx->setAttribute ("trimLengthSeconds", (double) clip->getLength() / sr);
                 if (! clip->enabled.load())
                     cx->setAttribute ("enabled", false);
                 clip->settings.writeTo (*cx);
@@ -218,6 +223,7 @@ namespace ProjectIO
             t->mute = tx->getBoolAttribute ("mute", false);
             t->solo = tx->getBoolAttribute ("solo", false);
             t->monitor = tx->getBoolAttribute ("monitor", false);
+            t->layerTakes = tx->getBoolAttribute ("layerTakes", false); // older projects used "newest on top"
 
             if (auto* preset = tx->getChildByName ("CHANNEL_PRESET"))
             {
@@ -237,6 +243,9 @@ namespace ProjectIO
                     clip->settings.readFrom (*cx);
                     if (! clip->settings.isNeutral())
                         engine.renderNow (*clip);
+                    clip->trimOffset = (juce::int64) std::llround (cx->getDoubleAttribute ("trimOffsetSeconds", 0.0) * sr);
+                    if (cx->hasAttribute ("trimLengthSeconds"))
+                        clip->trimLength = (juce::int64) std::llround (cx->getDoubleAttribute ("trimLengthSeconds") * sr);
                     engine.addClip (*t, std::move (clip));
                 }
                 else

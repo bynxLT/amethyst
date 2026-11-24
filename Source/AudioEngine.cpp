@@ -488,6 +488,53 @@ std::shared_ptr<AudioClip> AudioEngine::removeClip (Track& t, const AudioClip* c
     return nullptr;
 }
 
+void AudioEngine::trimClipStart (AudioClip& c, juce::int64 newStart)
+{
+    const juce::ScopedLock sl (lock); // start/offset/length change together
+    const auto start = c.startSample.load(), end = c.getEnd();
+    const auto earliest = start - c.getOffset();                       // can't reveal audio before the buffer begins
+    newStart = juce::jlimit (earliest, juce::jmax (earliest, end - (juce::int64) minClipSamples), newStart);
+
+    c.trimOffset = c.getOffset() + (newStart - start);
+    c.startSample = newStart;
+    c.trimLength = end - newStart;
+}
+
+void AudioEngine::trimClipEnd (AudioClip& c, juce::int64 newEnd)
+{
+    const juce::ScopedLock sl (lock);
+    const auto start = c.startSample.load();
+    const auto latest = start + (c.getBufferLength() - c.getOffset()); // can't play past the buffer's end
+    newEnd = juce::jlimit (juce::jmin (latest, start + (juce::int64) minClipSamples), latest, newEnd);
+    c.trimLength = newEnd - start;
+}
+
+std::shared_ptr<AudioClip> AudioEngine::splitClip (Track& t, const std::shared_ptr<AudioClip>& c, juce::int64 at)
+{
+    if (c == nullptr)
+        return nullptr;
+
+    const auto start = c->startSample.load(), end = c->getEnd();
+    if (at - start < minClipSamples || end - at < minClipSamples)
+        return nullptr; // too close to an edge
+
+    auto right = std::make_shared<AudioClip>();
+    right->source = c->source;
+    right->buffer = c->buffer;          // shared, read-only
+    right->file = c->file;
+    right->settings = c->settings;
+    right->enabled = c->enabled.load();
+    right->startSample = at;
+    right->trimOffset = c->getOffset() + (at - start);
+    right->trimLength = end - at;
+
+    const juce::ScopedLock sl (lock);
+    c->trimLength = at - start;
+    auto it = std::find (t.clips.begin(), t.clips.end(), c);
+    t.clips.insert (it == t.clips.end() ? it : std::next (it), right); // same layer as the original
+    return right;
+}
+
 //==============================================================================
 void AudioEngine::ensureScratch (int numSamples)
 {
@@ -641,10 +688,14 @@ void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* input, i
             t->recorder->write (chans, numSamples);
         }
 
-        // 2. Play clips (newest on top). Skipped while this track records a new take.
-        if (isPlay && ! t->clips.empty() && t->recorder == nullptr)
+        // 2. Play clips. Existing takes keep playing while this track records a new one,
+        //    so you can sing along to (or double) what's already there.
+        //    Layer mode sums overlapping takes; otherwise the newest clip wins.
+        if (isPlay && ! t->clips.empty())
         {
-            std::fill (coverage.get(), coverage.get() + numSamples, (juce::uint8) 0);
+            const bool layer = t->layerTakes.load();
+            if (! layer)
+                std::fill (coverage.get(), coverage.get() + numSamples, (juce::uint8) 0);
             auto* dl = trackBuffer.getWritePointer (0);
             auto* dr = trackBuffer.getWritePointer (1);
 
@@ -655,24 +706,38 @@ void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* input, i
                     continue;
 
                 const auto start = clip.startSample.load();
+                const auto len = clip.getLength();
                 const auto s0 = juce::jmax (pos, start);
-                const auto s1 = juce::jmin (pos + numSamples, start + clip.getLength());
+                const auto s1 = juce::jmin (pos + numSamples, start + len);
                 if (s1 <= s0)
                     continue;
 
                 const auto& cb = *clip.buffer;
+                const auto offset = clip.getOffset();
                 const float* srcL = cb.getReadPointer (0);
                 const float* srcR = cb.getReadPointer (cb.getNumChannels() > 1 ? 1 : 0);
+
+                // short fades at the played edges so trims and cuts never click
+                const auto fadeLen = juce::jmax<juce::int64> (1, juce::jmin<juce::int64> (96, len / 2));
 
                 for (auto p = s0; p < s1; ++p)
                 {
                     const int i = (int) (p - pos);
-                    if (coverage[i] != 0)
-                        continue;
-                    coverage[i] = 1;
-                    const auto si = p - start;
-                    dl[i] = srcL[si];
-                    dr[i] = srcR[si];
+                    if (! layer)
+                    {
+                        if (coverage[i] != 0)
+                            continue;
+                        coverage[i] = 1;
+                    }
+
+                    const auto rel = p - start;
+                    float g = 1.0f;
+                    if (rel < fadeLen)            g = (float) rel / (float) fadeLen;
+                    if (len - rel <= fadeLen)     g = juce::jmin (g, (float) (len - rel) / (float) fadeLen);
+
+                    const auto si = offset + rel;
+                    dl[i] += srcL[si] * g;
+                    dr[i] += srcR[si] * g;
                 }
             }
         }

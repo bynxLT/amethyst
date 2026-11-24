@@ -59,7 +59,6 @@ MainComponent::MainComponent()
         ProPrompt::show (*account, feature, this, [this] { AccountPanel::show (*account, this); });
     };
     accountBtn.onClick = [this] { AccountPanel::show (*account, this); };
-    accountBtn.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
     addAndMakeVisible (accountBtn);
     updateAccountButton();
     account->restoreSession();
@@ -119,6 +118,16 @@ MainComponent::MainComponent()
     zoomSlider.setValue (view.pixelsPerSecond, juce::dontSendNotification);
     zoomSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
     zoomSlider.setTooltip ("Timeline zoom");
+
+    moveToolBtn.setTooltip ("Move tool (V): drag clips; drag clip edges to trim");
+    trimToolBtn.setTooltip ("Trim tool (T): drag the left or right half of a clip to trim that edge. Shift snaps to beats");
+    cutToolBtn.setTooltip ("Cut tool (C): click a clip to split it. Shift snaps to beats");
+    moveToolBtn.onClick = [this] { setTool (EditTool::Move); };
+    trimToolBtn.onClick = [this] { setTool (EditTool::Trim); };
+    cutToolBtn.onClick = [this] { setTool (EditTool::Cut); };
+    for (auto* b : { &moveToolBtn, &trimToolBtn, &cutToolBtn })
+        addAndMakeVisible (b);
+    setTool (EditTool::Move);
     zoomSlider.onValueChange = [this] { view.pixelsPerSecond = zoomSlider.getValue(); };
 
     for (juce::Component* c : std::initializer_list<juce::Component*> {
@@ -143,7 +152,8 @@ MainComponent::MainComponent()
     addTrackRowBtn.setWantsKeyboardFocus (false);
     setWantsKeyboardFocus (true);
 
-    addTrack ("Lead Vocal");
+    for (int i = 1; i <= 8; ++i)   // start with a ready-made list of tracks
+        addTrack ("Track " + juce::String (i));
 
     setSize (1640, 880);
     startTimerHz (30);
@@ -219,7 +229,7 @@ void MainComponent::resized()
     auto bar = r.removeFromTop (kToolbarHeight).reduced (18, 13);
 
     // Decide what fits
-    const int fixedWidth = 44 + 12 + 190 + 12 + 118 + 8 + 44 + 12 + 196 + 12 + 150 + 30 + 146 + 12 + 190 + 12 + 150 + 12 + 140 + 94;
+    const int fixedWidth = 44 + 12 + 190 + 12 + 118 + 8 + 44 + 12 + 196 + 12 + 150 + 30 + 146 + 12 + 190 + 12 + 150 + 12 + 140 + 112;
     showWordmark = bar.getWidth() >= fixedWidth + 110;
     const bool showSystem = bar.getWidth() >= fixedWidth - 40;
     systemMeter.setVisible (showSystem);
@@ -256,7 +266,7 @@ void MainComponent::resized()
 
     // Right side
     {
-        auto a = bar.removeFromRight (78);
+        auto a = bar.removeFromRight (96);
         group (a);
         accountBtn.setBounds (a);
     }
@@ -301,8 +311,18 @@ void MainComponent::resized()
 
     auto rulerArea = r.removeFromTop (28);
     ruler.setBounds (rulerArea);
-    zoomSlider.setBounds (rulerArea.withWidth (kHeaderWidth).reduced (16, 6).withTrimmedLeft (60));
-    zoomSlider.toFront (false);
+    {
+        auto tools = rulerArea.withWidth (kHeaderWidth).reduced (4, 3);
+        for (auto* b : { &moveToolBtn, &trimToolBtn, &cutToolBtn })
+        {
+            b->setBounds (tools.removeFromLeft (44));
+            tools.removeFromLeft (2);
+            b->toFront (false);
+        }
+        tools.removeFromLeft (4);
+        zoomSlider.setBounds (tools.reduced (0, 3));
+        zoomSlider.toFront (false);
+    }
 
     hScroll.setBounds (r.removeFromBottom (14).withTrimmedLeft (kHeaderWidth));
     viewport.setBounds (r);
@@ -322,7 +342,8 @@ void MainComponent::layoutTracks()
 void MainComponent::setMixerVisible (bool shouldShow)
 {
     mixer.setVisible (shouldShow);
-    for (juce::Component* c : std::initializer_list<juce::Component*> { &ruler, &viewport, &hScroll, &zoomSlider })
+    for (juce::Component* c : std::initializer_list<juce::Component*> { &ruler, &viewport, &hScroll, &zoomSlider,
+                                                                         &moveToolBtn, &trimToolBtn, &cutToolBtn })
         c->setVisible (! shouldShow);
 
     mixerBtn.setToggleState (shouldShow, juce::dontSendNotification);
@@ -350,6 +371,13 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (key == juce::KeyPress::spaceKey)               { togglePlay(); return true; }
     if (key == juce::KeyPress::tabKey)                 { setMixerVisible (! mixer.isVisible()); return true; }
     if (key.getTextCharacter() == 'r' || key.getTextCharacter() == 'R') { toggleRecord(); return true; }
+    if (! mixer.isVisible() && ! key.getModifiers().isAnyModifierKeyDown())
+    {
+        const auto ch = juce::CharacterFunctions::toLowerCase (key.getTextCharacter());
+        if (ch == 'v') { setTool (EditTool::Move); return true; }
+        if (ch == 't') { setTool (EditTool::Trim); return true; }
+        if (ch == 'c') { setTool (EditTool::Cut);  return true; }
+    }
     if (key == juce::KeyPress::homeKey)                { engine.setTransportPosition (0); view.startSeconds = 0.0; return true; }
     if (key == juce::KeyPress ('s', juce::ModifierKeys::commandModifier, 0)) { saveProject (false); return true; }
     if (key == juce::KeyPress ('o', juce::ModifierKeys::commandModifier, 0)) { openProject(); return true; }
@@ -569,19 +597,27 @@ void MainComponent::changeListenerCallback (juce::ChangeBroadcaster* source)
     }
 }
 
+void MainComponent::setTool (EditTool tool)
+{
+    view.tool = tool;
+    moveToolBtn.setToggleState (tool == EditTool::Move, juce::dontSendNotification);
+    trimToolBtn.setToggleState (tool == EditTool::Trim, juce::dontSendNotification);
+    cutToolBtn.setToggleState (tool == EditTool::Cut, juce::dontSendNotification);
+    for (auto* tc : trackComps)
+        tc->repaint();
+}
+
 void MainComponent::updateAccountButton()
 {
     if (! account->isSignedIn())
     {
-        accountBtn.setButtonText ("Sign in");
-        accountBtn.setToggleState (false, juce::dontSendNotification);
+        accountBtn.setInfo ({}, {}, "Sign in", false, false);
         accountBtn.setTooltip ("Sign in or create an AMETHYST account");
     }
     else
     {
         const bool pro = account->isPro();
-        accountBtn.setButtonText (pro ? "PRO" : "FREE");
-        accountBtn.setToggleState (pro, juce::dontSendNotification);
+        accountBtn.setInfo (account->getAvatar(), account->getEmail(), pro ? "PRO" : "FREE", pro, true);
         accountBtn.setTooltip (account->getEmail() + "  -  " + account->getPlanText());
     }
 }
@@ -594,7 +630,7 @@ void MainComponent::scrollBarMoved (juce::ScrollBar*, double newRangeStart)
 //==============================================================================
 Track* MainComponent::addTrack (const juce::String& name)
 {
-    auto* t = engine.addTrack (name.isNotEmpty() ? name : "Vocal " + juce::String (engine.getTracks().size() + 1));
+    auto* t = engine.addTrack (name.isNotEmpty() ? name : "Track " + juce::String (engine.getTracks().size() + 1));
     auto* tc = trackComps.add (new TrackComponent (ctx, *t));
     trackHolder.addAndMakeVisible (tc);
     layoutTracks();

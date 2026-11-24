@@ -31,6 +31,74 @@ namespace
 }
 
 //==============================================================================
+void drawAvatar (juce::Graphics& g, juce::Rectangle<float> area, const juce::Image& picture, const juce::String& email, bool pro)
+{
+    const float d = juce::jmin (area.getWidth(), area.getHeight());
+    const auto circle = juce::Rectangle<float> (d, d).withCentre (area.getCentre());
+
+    if (pro) // glowing ring for Pro
+    {
+        g.setColour (Theme::accent.withAlpha (0.35f));
+        g.fillEllipse (circle.expanded (2.5f));
+    }
+
+    if (picture.isValid())
+    {
+        juce::Graphics::ScopedSaveState s (g);
+        juce::Path clip;
+        clip.addEllipse (circle);
+        g.reduceClipRegion (clip);
+        g.setOpacity (1.0f); // images use the current colour's alpha - the glow above left it at 35%
+        g.drawImage (picture, circle, juce::RectanglePlacement::fillDestination);
+    }
+    else
+    {
+        g.setGradientFill (juce::ColourGradient (Theme::accent2, circle.getX(), circle.getY(),
+                                                 juce::Colour (0xff5a3fd8), circle.getRight(), circle.getBottom(), false));
+        g.fillEllipse (circle);
+        g.setColour (juce::Colours::white);
+        g.setFont (juce::FontOptions (d * 0.48f, juce::Font::bold));
+        g.drawText (email.isNotEmpty() ? email.substring (0, 1).toUpperCase() : juce::String ("?"), circle.toNearestInt(), juce::Justification::centred);
+    }
+
+    g.setColour (pro ? Theme::accent2 : juce::Colours::white.withAlpha (0.35f));
+    g.drawEllipse (circle.reduced (0.5f), pro ? 1.6f : 1.0f);
+}
+
+void AccountBadge::paintButton (juce::Graphics& g, bool over, bool down)
+{
+    auto r = getLocalBounds().toFloat().reduced (1.0f);
+    const float rad = juce::jmin (r.getHeight() * 0.5f, 10.0f);
+
+    if (pro)
+    {
+        g.setColour (Theme::accent.withAlpha (0.28f));
+        g.fillRoundedRectangle (r.expanded (2.0f), rad + 2.0f);
+        g.setGradientFill (juce::ColourGradient (Theme::accent.brighter (0.2f), r.getX(), r.getY(), Theme::accent.darker (0.4f), r.getX(), r.getBottom(), false));
+    }
+    else
+    {
+        g.setColour (juce::Colours::white.withAlpha (down ? 0.03f : (over ? 0.13f : 0.07f)));
+    }
+    g.fillRoundedRectangle (r, rad);
+    g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (pro ? 0.25f : 0.12f), r.getX(), r.getY(),
+                                             juce::Colours::white.withAlpha (0.0f), r.getX(), r.getCentreY(), false));
+    g.fillRoundedRectangle (r, rad);
+    g.setColour (juce::Colours::white.withAlpha (over ? 0.32f : 0.16f));
+    g.drawRoundedRectangle (r.reduced (0.5f), rad, 1.0f);
+
+    auto content = r.reduced (5.0f, 4.0f);
+    if (showAvatar)
+    {
+        drawAvatar (g, content.removeFromLeft (content.getHeight()), pro ? avatar : juce::Image(), email, pro);
+        content.removeFromLeft (6.0f);
+    }
+    g.setColour (pro ? juce::Colours::white : Theme::text);
+    g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+    g.drawText (text, content.toNearestInt(), showAvatar ? juce::Justification::centredLeft : juce::Justification::centred, true);
+}
+
+//==============================================================================
 AccountPanel::AccountPanel (Account& a) : account (a)
 {
     styleEditor (emailBox, "Email");
@@ -54,8 +122,24 @@ AccountPanel::AccountPanel (Account& a) : account (a)
                                                 "Subscriptions are coming soon!\n\nOnce they launch you'll be able to upgrade right here.");
     };
 
+    changePicBtn.setTooltip ("Pick a PNG or JPG - it's cropped to a circle (Pro)");
+    changePicBtn.onClick = [this]
+    {
+        chooser = std::make_unique<juce::FileChooser> ("Choose a profile picture",
+                                                       juce::File::getSpecialLocation (juce::File::userPicturesDirectory),
+                                                       "*.png;*.jpg;*.jpeg");
+        juce::Component::SafePointer<AccountPanel> safe (this);
+        chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                              [safe] (const juce::FileChooser& fc)
+        {
+            if (safe != nullptr && fc.getResult().existsAsFile())
+                safe->account.setAvatarFromFile (fc.getResult());
+        });
+    };
+    removePicBtn.onClick = [this] { account.removeAvatar(); };
+
     for (juce::Component* c : std::initializer_list<juce::Component*> { &emailBox, &passwordBox, &signInBtn, &signUpBtn, &forgotBtn,
-                                                                         &refreshBtn, &upgradeBtn, &signOutBtn })
+                                                                         &refreshBtn, &upgradeBtn, &signOutBtn, &changePicBtn, &removePicBtn })
         addChildComponent (c);
 
     account.addChangeListener (this);
@@ -97,6 +181,10 @@ void AccountPanel::refresh()
         c->setEnabled (! busy);
     }
     upgradeBtn.setVisible (configured && signedIn && ! account.isPro());
+    changePicBtn.setVisible (configured && signedIn && account.isPro());
+    changePicBtn.setEnabled (! busy);
+    removePicBtn.setVisible (configured && signedIn && account.isPro() && account.getAvatar().isValid());
+    removePicBtn.setEnabled (! busy);
     resized();
     repaint();
 }
@@ -130,16 +218,28 @@ void AccountPanel::paint (juce::Graphics& g)
 
     if (account.isSignedIn())
     {
+        const bool pro = account.isPro();
+
+        // identity row: profile picture + email (+ picture buttons, laid out in resized())
+        auto idRow = r.removeFromTop (66);
+        avatarArea = idRow.removeFromLeft (60);
+        drawAvatar (g, avatarArea.toFloat().reduced (2.0f), account.getAvatar(), account.getEmail(), pro);
+        idRow.removeFromLeft (12);
         g.setColour (Theme::textDim);
-        g.setFont (juce::FontOptions (12.5f));
-        g.drawText ("Signed in as", r.removeFromTop (18), juce::Justification::left);
+        g.setFont (juce::FontOptions (12.0f));
+        g.drawText ("Signed in as", idRow.removeFromTop (16), juce::Justification::left);
         g.setColour (Theme::text);
-        g.setFont (juce::FontOptions (17.0f, juce::Font::bold));
-        g.drawText (account.getEmail(), r.removeFromTop (26), juce::Justification::left, true);
+        g.setFont (juce::FontOptions (16.0f, juce::Font::bold));
+        g.drawText (account.getEmail(), idRow.removeFromTop (22), juce::Justification::left, true);
+        if (! pro)
+        {
+            g.setColour (Theme::accent);
+            g.setFont (juce::FontOptions (11.5f, juce::Font::bold));
+            g.drawText ("Profile pictures come with Pro", idRow.removeFromTop (22), juce::Justification::left, true);
+        }
         r.removeFromTop (12);
 
         // plan badge
-        const bool pro = account.isPro();
         auto badge = r.removeFromTop (54).toFloat();
         if (pro)
         {
@@ -197,6 +297,14 @@ void AccountPanel::resized()
     }
     else
     {
+        // picture buttons under the email, beside the avatar (matches paint())
+        auto idRow = r.removeFromTop (66).withTrimmedLeft (72);
+        idRow.removeFromTop (40);
+        auto picRow = idRow.removeFromTop (24);
+        changePicBtn.setBounds (picRow.removeFromLeft (130));
+        picRow.removeFromLeft (6);
+        removePicBtn.setBounds (picRow.removeFromLeft (76));
+
         auto bottom = getLocalBounds().reduced (30, 22).removeFromBottom (36);
         signOutBtn.setBounds (bottom.removeFromRight (100));
         bottom.removeFromRight (8);

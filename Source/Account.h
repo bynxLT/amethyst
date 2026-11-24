@@ -38,10 +38,18 @@ public:
     void signOut (const juce::String& accessToken) const;
     juce::String sendPasswordReset (const juce::String& email) const;   // empty = success
 
+    // Profile picture in Supabase Storage (bucket "avatars", path <uid>/avatar.png).
+    struct Blob { bool ok = false; bool notFound = false; bool networkError = false; juce::String error; juce::MemoryBlock data; };
+    juce::String uploadAvatar (const juce::String& accessToken, const juce::String& userId, const juce::MemoryBlock& png) const; // empty = success
+    Blob downloadAvatar (const juce::String& accessToken, const juce::String& userId) const;
+    juce::String deleteAvatar (const juce::String& accessToken, const juce::String& userId) const;
+
 private:
-    struct Response { int status = 0; juce::var json; juce::String networkError; };
+    struct Response { int status = 0; juce::var json; juce::String networkError; juce::MemoryBlock raw; };
 
     Response send (const juce::String& method, const juce::String& path, const juce::String& body, const juce::String& bearer) const;
+    Response sendBytes (const juce::String& method, const juce::String& path, const juce::MemoryBlock* body,
+                        const juce::String& contentType, const juce::String& bearer, const juce::String& extraHeaders) const;
     Session parseSession (const Response&) const;
     static juce::String errorText (const Response&);
 
@@ -63,6 +71,11 @@ public:
     bool isPro() const;
 
     juce::String getEmail() const  { return email; }
+
+    // Profile picture (Pro only). Empty image = none.
+    juce::Image getAvatar() const  { return isPro() ? avatar : juce::Image(); }
+    void setAvatarFromFile (const juce::File& imageFile);
+    void removeAvatar();
     juce::String getStatus() const { return status; }
     juce::String getPlanText() const;
 
@@ -81,6 +94,9 @@ private:
 
     void applySession (const SupabaseApi::Session&);
     void checkEntitlement();
+    void fetchAvatar();
+    juce::File avatarCacheFile() const;
+    juce::Image avatar;
     void clearSession();
     void save();
     void load();
