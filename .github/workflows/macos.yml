@@ -14,11 +14,18 @@ on:
 
 jobs:
   macos:
-    runs-on: macos-14
+    # macos-14 images are retired. If this one is ever retired too, change it to macos-latest.
+    runs-on: macos-15
     timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Select Xcode 16 (known-good with JUCE 8.0.4)
+        run: |
+          XC=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$XC" ]; then sudo xcode-select -s "$XC"; else echo "::warning::Xcode 16 not found, using default"; fi
+          xcodebuild -version
 
       - name: Write Supabase config
         env:
