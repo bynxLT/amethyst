@@ -1,4 +1,5 @@
 #include "ClipEditor.h"
+#include "PluginWindows.h"
 
 namespace
 {
@@ -477,4 +478,5 @@ ClipEditorWindow::ClipEditorWindow (AppContext& ctx, Track& t, std::shared_ptr<A
     setResizable (false, false);
     centreWithSize (getWidth(), getHeight());
     setVisible (true);
+    FloatAboveMain::attach (*this);
 }

@@ -2,6 +2,51 @@
 
 #include "Track.h"
 
+bool amethystSetWindowOwner (void* child, void* owner);
+
+// Keeps tool windows (plug-in editors, clip editor) floating above AMETHYST's main window,
+// so clicking the main window never hides them behind it.
+//   Windows: real owned windows (stay above the owner only, minimise with it).
+//   Elsewhere: always-on-top while AMETHYST is the active app, normal otherwise.
+class FloatAboveMain : private juce::Timer
+{
+public:
+    static void attach (juce::Component& window)
+    {
+        auto* main = mainWindow();
+        if (main == nullptr || main == &window)
+            return;
+
+        if (amethystSetWindowOwner (window.getWindowHandle(), main->getWindowHandle()))
+            return;
+
+        auto& self = instance();
+        self.windows.add (&window);
+        window.setAlwaysOnTop (juce::Process::isForegroundProcess());
+        if (! self.isTimerRunning())
+            self.startTimer (250);
+    }
+
+    // The app's main window is the first top-level window created.
+    static juce::Component*& mainWindow() { static juce::Component* main = nullptr; return main; }
+
+private:
+    static FloatAboveMain& instance() { static FloatAboveMain s; return s; }
+
+    void timerCallback() override
+    {
+        const bool front = juce::Process::isForegroundProcess();
+        windows.removeIf ([] (auto& w) { return w == nullptr; });
+        for (auto& w : windows)
+            if (w->isAlwaysOnTop() != front)
+                w->setAlwaysOnTop (front);
+        if (windows.isEmpty())
+            stopTimer();
+    }
+
+    juce::Array<juce::Component::SafePointer<juce::Component>> windows;
+};
+
 namespace PluginWindowLayout
 {
     // Usable screen area for a window, leaving room for the native title bar and borders.
@@ -97,6 +142,7 @@ public:
 
         centreWithSize (getWidth(), getHeight());
         setVisible (true);
+        FloatAboveMain::attach (*this);
         keepOnScreen();
     }
 

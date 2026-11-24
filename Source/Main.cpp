@@ -174,8 +174,33 @@ public:
         return failures == 0 ? 0 : 1;
     }
 
+    // Checks that tool windows really become owned by the main window. Windows stay hidden.
+    static int runWindowTest()
+    {
+        juce::DocumentWindow mainWin ("main", juce::Colours::black, 0, true);
+        juce::DocumentWindow toolWin ("tool", juce::Colours::black, 0, true);
+        FloatAboveMain::mainWindow() = &mainWin;
+        FloatAboveMain::attach (toolWin);
+        FloatAboveMain::mainWindow() = nullptr;
+
+        // attach() succeeded via OS ownership if it didn't fall back to always-on-top
+        const bool owned = amethystSetWindowOwner (toolWin.getWindowHandle(), mainWin.getWindowHandle());
+        std::printf ("[%s] tool window owned by main window\n", owned ? "ok" : "FAIL");
+        std::printf ("[%s] no always-on-top fallback needed\n", ! toolWin.isAlwaysOnTop() ? "ok" : "FAIL");
+        const bool ok = owned && ! toolWin.isAlwaysOnTop();
+        std::printf (ok ? "window test OK\n" : "window test FAILED\n");
+        return ok ? 0 : 1;
+    }
+
     void initialise (const juce::String& commandLine) override
     {
+        if (commandLine.contains ("--window-test"))
+        {
+            setApplicationReturnValue (runWindowTest());
+            quit();
+            return;
+        }
+
         if (commandLine.contains ("--account-test"))
         {
             setApplicationReturnValue (runAccountTest (juce::StringArray::fromTokens (commandLine, true)));
@@ -233,6 +258,12 @@ public:
             setResizeLimits (1200, 520, 10000, 10000);
             centreWithSize (getWidth(), getHeight());
             setVisible (true);
+            FloatAboveMain::mainWindow() = this; // plug-in / clip windows float above this one
+        }
+
+        ~MainWindow() override
+        {
+            FloatAboveMain::mainWindow() = nullptr;
         }
 
         void closeButtonPressed() override { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }

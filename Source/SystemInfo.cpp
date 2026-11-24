@@ -33,6 +33,21 @@ std::size_t vocaldawProcessMemoryMB()
     return 0;
 }
 
+// Make `child` an owned window of `owner` (Windows): it then always stays above the owner,
+// minimises with it, and doesn't float over other apps. Returns false where unsupported.
+bool amethystSetWindowOwner (void* child, void* owner)
+{
+   #if defined (_WIN32)
+    if (child == nullptr || owner == nullptr)
+        return false;
+    SetWindowLongPtrW ((HWND) child, GWLP_HWNDPARENT, (LONG_PTR) owner);
+    return GetWindow ((HWND) child, GW_OWNER) == (HWND) owner;
+   #else
+    (void) child; (void) owner;
+    return false;
+   #endif
+}
+
 #if defined (__APPLE__)
 namespace
 {
