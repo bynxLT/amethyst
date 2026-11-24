@@ -1,0 +1,4 @@
+build/
+build-mac/
+*.dmg
+config/supabase.json

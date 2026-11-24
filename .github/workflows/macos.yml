@@ -1,0 +1,71 @@
+# Builds AMETHYST for macOS 13+ (universal: Apple Silicon + Intel) and uploads a .dmg.
+#
+# Setup (once): in your GitHub repo go to Settings > Secrets and variables > Actions and add
+#   SUPABASE_URL       your project URL
+#   SUPABASE_ANON_KEY  your publishable / anon key (never the secret / service_role key)
+# Without them the app still builds, but sign-in is disabled.
+
+name: macOS build
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-14
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write Supabase config
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          mkdir -p config
+          if [ -n "$SUPABASE_URL" ] && [ -n "$SUPABASE_ANON_KEY" ]; then
+            printf '{ "url": "%s", "anonKey": "%s" }\n' "$SUPABASE_URL" "$SUPABASE_ANON_KEY" > config/supabase.json
+            echo "Supabase config written"
+          else
+            echo "::warning::SUPABASE_URL / SUPABASE_ANON_KEY secrets not set - building without sign-in"
+          fi
+
+      - name: Cache JUCE download
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: juce-8.0.4-${{ runner.os }}
+
+      - name: Configure
+        run: cmake -S . -B build -G Xcode -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
+
+      - name: Build
+        run: cmake --build build --config Release -- -quiet
+
+      - name: Sign (ad-hoc)
+        run: codesign --force --deep --sign - "build/VocalDAW_artefacts/Release/AMETHYST.app"
+
+      - name: Check binary
+        run: |
+          APP="build/VocalDAW_artefacts/Release/AMETHYST.app"
+          lipo -info "$APP/Contents/MacOS/AMETHYST"
+          otool -l "$APP/Contents/MacOS/AMETHYST" | grep -A3 -E "LC_BUILD_VERSION|LC_VERSION_MIN" | head -8
+          /usr/libexec/PlistBuddy -c "Print :NSMicrophoneUsageDescription" "$APP/Contents/Info.plist"
+
+      - name: Self-test (DSP + built-in effects)
+        run: build/VocalDAW_artefacts/Release/AMETHYST.app/Contents/MacOS/AMETHYST --selftest
+
+      - name: Package DMG
+        run: |
+          mkdir -p dmg
+          cp -R "build/VocalDAW_artefacts/Release/AMETHYST.app" dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname "AMETHYST" -srcfolder dmg -ov -format UDZO "AMETHYST-macOS.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AMETHYST-macOS
+          path: AMETHYST-macOS.dmg
