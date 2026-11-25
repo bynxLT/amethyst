@@ -58,12 +58,13 @@ jobs:
       - name: Check binary
         run: |
           APP="build/VocalDAW_artefacts/Release/AMETHYST 2026.app"
-          lipo -info "$APP/Contents/MacOS/AMETHYST"
-          otool -l "$APP/Contents/MacOS/AMETHYST" | grep -A3 -E "LC_BUILD_VERSION|LC_VERSION_MIN" | head -8
+          lipo -info "$APP/Contents/MacOS/AMETHYST 2026"
+          otool -l "$APP/Contents/MacOS/AMETHYST 2026" | grep -A3 -E "LC_BUILD_VERSION|LC_VERSION_MIN" | head -8
           /usr/libexec/PlistBuddy -c "Print :NSMicrophoneUsageDescription" "$APP/Contents/Info.plist"
 
       - name: Self-test (DSP + built-in effects)
-        run: "build/VocalDAW_artefacts/Release/AMETHYST 2026.app/Contents/MacOS/AMETHYST 2026" --selftest
+        run: |
+          "build/VocalDAW_artefacts/Release/AMETHYST 2026.app/Contents/MacOS/AMETHYST 2026" --selftest
 
       - name: Package DMG
         run: |
