@@ -332,6 +332,22 @@ SlotPanel::SlotPanel (AppContext& c) : ctx (c)
     for (int i = 0; i < Track::maxInserts; ++i)
         addAndMakeVisible (rows.add (new SlotRow (*this, i)));
 
+    addBusBtn.setTooltip ("Add a shared reverb / delay channel that tracks send to");
+    addBusBtn.onClick = [this]
+    {
+        juce::PopupMenu m;
+        m.addSectionHeader ("New FX bus");
+        m.addItem (1, "Reverb bus (plate)");
+        m.addItem (2, "Delay bus (1/4 note)");
+        m.addItem (3, "Empty bus");
+        juce::Component::SafePointer<SlotPanel> safe (this);
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&addBusBtn), [safe] (int r)
+        {
+            if (safe == nullptr || r == 0 || ! safe->ctx.addBus) return;
+            safe->ctx.addBus (r == 1 ? 1 : r == 2 ? 2 : 0, safe->track);
+        });
+    };
+    addChildComponent (addBusBtn);
     savePresetBtn.setTooltip ("Save this channel's fader, pan and all slot plug-ins (with their settings)");
     savePresetBtn.onClick = [this] { if (track != nullptr) UiHelpers::savePresetAs (ctx, *track); };
     addAndMakeVisible (savePresetBtn);
@@ -355,9 +371,38 @@ SlotPanel::SlotPanel (AppContext& c) : ctx (c)
     disableFocusOnChildren (*this);
 }
 
+void SlotPanel::rebuildSends()
+{
+    sendSliders.clear();
+    sendLabels.clear();
+    const bool canSend = track != nullptr && ! track->isMaster && ! track->isBus && ! track->isAutomation();
+    addBusBtn.setVisible (track != nullptr && ! track->isMaster && ! track->isAutomation());
+    if (! canSend)
+        return;
+    for (int b = 0; b < Track::maxBuses; ++b)
+    {
+        auto* bus = ctx.engine.getBus (b);
+        if (bus == nullptr)
+            continue;
+        auto* l = sendLabels.add (new juce::Label ({}, "Send > " + bus->name));
+        l->setColour (juce::Label::textColourId, Theme::text.withAlpha (0.8f));
+        addAndMakeVisible (l);
+        auto* s = sendSliders.add (new juce::Slider (juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight));
+        s->setRange (0.0, 100.0, 1.0);
+        s->setTextValueSuffix (" %");
+        s->setTextBoxStyle (juce::Slider::TextBoxRight, false, 52, 20);
+        s->setValue (track->sends[(size_t) b].load() * 100.0, juce::dontSendNotification);
+        auto* tp = track;
+        s->onValueChange = [s, tp, b] { tp->sends[(size_t) b] = (float) (s->getValue() / 100.0); };
+        addAndMakeVisible (s);
+    }
+    resized();
+}
+
 void SlotPanel::setTrack (Track* t)
 {
     track = t;
+    rebuildSends();
     const bool showInput = track != nullptr && ! track->isMaster;
     inputLabel.setVisible (showInput);
     inputBox.setVisible (showInput);
@@ -396,6 +441,20 @@ void SlotPanel::resized()
 
     for (auto* row : rows)
         row->setBounds (r.removeFromTop (31));
+
+    // sends to FX buses
+    for (int i = 0; i < sendSliders.size(); ++i)
+    {
+        r.removeFromTop (4);
+        auto line = r.removeFromTop (24);
+        sendLabels[i]->setBounds (line.removeFromLeft (line.getWidth() / 2));
+        sendSliders[i]->setBounds (line);
+    }
+    if (addBusBtn.isVisible())
+    {
+        r.removeFromTop (6);
+        addBusBtn.setBounds (r.removeFromTop (24).removeFromLeft (150));
+    }
 
     r.removeFromTop (12);
     auto presetLine = r.removeFromTop (28);
@@ -646,7 +705,7 @@ void MixerStrip::paint (juce::Graphics& g)
     auto numberRow = r.removeFromTop (24);
     g.setColour (track.isMaster ? Theme::accent2 : Theme::text.withAlpha (0.75f));
     g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
-    g.drawText (track.isMaster ? juce::String ("M") : juce::String (number), numberRow, juce::Justification::centred);
+    g.drawText (track.isMaster ? juce::String ("M") : track.isBus ? juce::String ("FX") : juce::String (number), numberRow, juce::Justification::centred);
     clipLightArea = numberRow.removeFromRight (18).withSizeKeepingCentre (10, 10);
     g.setColour (track.clipped.load() ? Theme::record : Theme::panelLight);
     g.fillEllipse (clipLightArea.toFloat());

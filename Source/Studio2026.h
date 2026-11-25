@@ -32,6 +32,7 @@ public:
     ~Studio2026() override;
 
     void addCommand (Command);
+    juce::StringArray getShortcutLines() const;   // "Ctrl+K    Command palette" ...
     bool keyPressed (const juce::KeyPress&) override;   // the 2026 shortcuts; MainComponent asks first
     void toast (const juce::String& text, bool warning = false);
     void showPalette();

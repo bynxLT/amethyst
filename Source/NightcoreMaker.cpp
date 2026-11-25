@@ -1,6 +1,7 @@
 #include "NightcoreMaker.h"
 #include "Exporter.h"
 #include "Theme.h"
+#include "Mascot.h"
 
 namespace
 {
@@ -354,7 +355,12 @@ void NightcoreMaker::paint (juce::Graphics& g)
 
     auto r = getLocalBounds().reduced (24);
     auto top = r.removeFromTop (70);
-    // logo: a small moon + sparkle
+    // logo: the mascot's face (she's the Nightcore Maker's icon)
+    if (Mascot::face().isValid())
+    {
+        Mascot::drawBadge (g, top.removeFromLeft (56).toFloat().reduced (3.0f));
+    }
+    else
     {
         auto icon = top.removeFromLeft (56).toFloat().reduced (4.0f);
         g.setGradientFill (juce::ColourGradient (Theme::accent2, icon.getX(), icon.getY(), Theme::accent, icon.getRight(), icon.getBottom(), false));

@@ -523,6 +523,165 @@ namespace
 
 namespace
 {
+    // A plug-in that crashes (null write) on its 3rd block: AMETHYST must survive it.
+    class CrashingPlugin : public juce::AudioPluginInstance
+    {
+    public:
+        const juce::String getName() const override { return "Crashy"; }
+        void fillInPluginDescription (juce::PluginDescription& d) const override { d.name = "Crashy"; d.pluginFormatName = "Test"; }
+        void prepareToPlay (double, int) override {}
+        void releaseResources() override {}
+        void processBlock (juce::AudioBuffer<float>& b, juce::MidiBuffer&) override
+        {
+            if (++blocks >= 3)
+            {
+                volatile int* nowhere = nullptr;
+                *nowhere = 42;
+            }
+            b.applyGain (0.5f);
+        }
+        double getTailLengthSeconds() const override { return 0.0; }
+        bool acceptsMidi() const override { return false; }
+        bool producesMidi() const override { return false; }
+        juce::AudioProcessorEditor* createEditor() override { return nullptr; }
+        bool hasEditor() const override { return false; }
+        int getNumPrograms() override { return 1; }
+        int getCurrentProgram() override { return 0; }
+        void setCurrentProgram (int) override {}
+        const juce::String getProgramName (int) override { return {}; }
+        void changeProgramName (int, const juce::String&) override {}
+        void getStateInformation (juce::MemoryBlock&) override {}
+        void setStateInformation (const void*, int) override {}
+        int blocks = 0;
+    };
+
+    void testCrossfadeAndGain()
+    {
+        // two clips of a steady tone overlapping by 0.5 s: equal-power crossfade keeps the level steady (no dip, no bump)
+        AudioEngine eng;
+        auto* t = eng.addTrack ("T");
+        t->layerTakes = false;
+        auto a = makeClip (sine (300.0, 0.3f, 3.0), 0);
+        auto b = makeClip (sine (300.0, 0.3f, 3.0), (juce::int64) (48000 * 2.5));
+        eng.addClip (*t, a);
+        eng.addClip (*t, b);
+        juce::int64 in = 0, out = 0;
+        eng.crossfadeLengths (*t, *b, in, out);
+        eng.play();
+        auto o = runEngine (eng, 40, 4096);
+        eng.stop();
+        // RMS in 20 ms windows across the overlap (2.5 .. 3.0 s): sines at the same phase -> equal power gives up to +3 dB at the middle
+        float lo = 1.0f, hi = 0.0f;
+        for (int w = (int) (48000 * 2.45); w < (int) (48000 * 3.05); w += 960)
+        {
+            const float r = o.getRMSLevel (0, w, 960) / (0.3f / std::sqrt (2.0f));
+            lo = juce::jmin (lo, r); hi = juce::jmax (hi, r);
+        }
+        report (std::abs ((double) in / 48000.0 - 0.5) < 0.001 && lo > 0.95f && hi < 1.45f,
+                "crossfade: 0.5 s overlap fades smoothly (level " + juce::String (lo, 2) + " .. " + juce::String (hi, 2) + ", no gap)");
+
+        // a fully stacked double is not crossfaded (layering stays)
+        juce::int64 in2 = 0, out2 = 0;
+        auto* t3 = eng.addTrack ("Doubles");
+        eng.addClip (*t3, makeClip (sine (300.0, 0.3f, 3.0), 0));
+        auto dbl = makeClip (sine (300.0, 0.3f, 3.0), 0);
+        eng.addClip (*t3, dbl);
+        eng.crossfadeLengths (*t3, *dbl, in2, out2);
+        report (in2 == 0 && out2 == 0, "crossfade: a fully stacked double isn't crossfaded");
+
+        // clip volume handle: -6 dB halves the level, live
+        AudioEngine e2;
+        auto* t2 = e2.addTrack ("T");
+        auto c = makeClip (sine (440.0, 0.4f, 1.0), 0);
+        c->handleGainDb = -6.0f;
+        e2.addClip (*t2, c);
+        e2.play();
+        const float lvl = runEngine (e2, 2, 4096).getMagnitude (0, 2000, 4000);
+        report (std::abs (lvl - 0.2f) < 0.01f, "clip volume handle: -6 dB plays at " + juce::String (lvl, 3) + " (from 0.4)");
+    }
+
+    void testBuses()
+    {
+        auto level = [] (AudioEngine& eng) { eng.setTransportPosition (0); eng.play(); auto o = runEngine (eng, 2, 4096); eng.stop(); return o.getMagnitude (0, 2000, 4000); };
+        AudioEngine eng;
+        auto* t = eng.addTrack ("Vox");
+        auto* other = eng.addTrack ("Beat");
+        eng.addClip (*t, makeClip (sine (440.0, 0.2f, 1.0), 0));
+        auto* bus = eng.addBus ("FX Bus");
+        t->sends[(size_t) bus->busIndex] = 0.5f;
+        const float withSend = level (eng);
+        bus->mute = true;
+        const float busMuted = level (eng);
+        bus->mute = false;
+        t->mute = true;
+        const float trackMuted = level (eng);
+        t->mute = false;
+        other->solo = true;   // soloing another track mutes Vox (and its send) but never the bus itself
+        const float soloOther = level (eng);
+        other->solo = false;
+        report (std::abs (withSend - 0.3f) < 0.01f && std::abs (busMuted - 0.2f) < 0.01f && trackMuted < 1.0e-5f && soloOther < 1.0e-5f
+                    && eng.getBus (bus->busIndex) == bus,
+                "send buses: 50% send adds half (" + juce::String (withSend, 3) + "), muted bus " + juce::String (busMuted, 3)
+                + ", muted track sends nothing, solo elsewhere silences it");
+        int made = 1;
+        while (eng.addBus ("more") != nullptr) ++made;
+        report (made == Track::maxBuses, "send buses: up to " + juce::String (made) + " buses");
+    }
+
+    void testComping()
+    {
+        // three takes (A on the channel, B and C on take lanes through it): keep B for 1-2 s, C for 2-3 s
+        AudioEngine eng;
+        auto* ch = eng.addTrack ("Vox");
+        auto* l1 = eng.addTrack ("Take 2");
+        auto* l2 = eng.addTrack ("Take 3");
+        eng.setPlayThrough (*l1, ch);
+        eng.setPlayThrough (*l2, ch);
+        auto a = makeClip (sine (200.0, 0.2f, 4.0), 0);
+        auto b = makeClip (sine (300.0, 0.2f, 4.0), 0);
+        auto c = makeClip (sine (400.0, 0.2f, 4.0), 0);
+        eng.addClip (*ch, a); eng.addClip (*l1, b); eng.addClip (*l2, c);
+        const auto s = (juce::int64) 48000;
+        eng.compTake (*l1, b, s, 2 * s);
+        // the first comp split take 3, so swipe the piece that is under 2.5 s now (as the UI would)
+        std::shared_ptr<AudioClip> under;
+        for (auto& clip : l2->clips)
+            if (clip->startSample.load() <= 2 * s + s / 2 && clip->getEnd() > 2 * s + s / 2)
+                under = clip;
+        eng.compTake (*l2, under, 2 * s, 3 * s);
+        // which take plays at each second: count enabled clips covering t
+        auto playing = [&] (juce::int64 t)
+        {
+            juce::String who;
+            for (auto* tr : { ch, l1, l2 })
+                for (auto& clip : tr->clips)
+                    if (clip->enabled.load() && clip->startSample.load() <= t && clip->getEnd() > t)
+                        who << (tr == ch ? "A" : tr == l1 ? "B" : "C");
+            return who;
+        };
+        const auto p0 = playing (s / 2), p1 = playing (s + s / 2), p2 = playing (2 * s + s / 2), p3 = playing (3 * s + s / 2);
+        report (p0 == "ABC" && p1 == "B" && p2 == "C" && p3 == "ABC",
+                "comping: 0-1 s " + p0 + ", 1-2 s " + p1 + ", 2-3 s " + p2 + ", 3-4 s " + p3 + " (B and C chosen in their ranges)");
+    }
+
+    void testCrashGuard()
+    {
+        AudioEngine eng;
+        auto* t = eng.addTrack ("T");
+        eng.addClip (*t, makeClip (sine (440.0, 0.4f, 2.0), 0));
+        auto crashy = std::make_unique<CrashingPlugin>();
+        crashy->setPlayConfigDetails (2, 2, 48000.0, 4096);
+        eng.insertPlugin (*t, 0, std::move (crashy)).reset();
+        eng.play();
+        auto out = runEngine (eng, 6, 4096);
+        eng.stop();
+        const bool switchedOff = t->inserts[0]->crashed.load() && t->inserts[0]->bypassed.load();
+        const float before = out.getMagnitude (0, 4096, 4096), after = out.getMagnitude (0, 4096 * 4, 4096);
+        report (switchedOff && eng.pluginCrashes.load() == 1 && std::abs (before - 0.2f) < 0.02f && std::abs (after - 0.4f) < 0.02f,
+                "crash guard: a plug-in that crashes is switched off and audio carries on (level " + juce::String (before, 2) + " through it, "
+                + juce::String (after, 2) + " after)");
+    }
+
     void testLicense()
     {
         namespace V = LicenseTestVectors;
@@ -567,5 +726,9 @@ int runSecondWaveSelfTests()
     testEngine();
     testWave3();
     testLicense();
+    testCrashGuard();
+    testComping();
+    testBuses();
+    testCrossfadeAndGain();
     return failures;
 }

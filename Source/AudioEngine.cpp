@@ -2,6 +2,8 @@
 #include "Plugins/Builtins.h"
 #include "Loudness.h"
 
+bool amethystGuardedProcess (juce::AudioPluginInstance*, juce::AudioBuffer<float>*, juce::MidiBuffer*);   // PluginGuard.cpp
+
 struct AudioEngine::LoudnessHolder
 {
     Loudness::Meter meter;
@@ -89,6 +91,27 @@ Track* AudioEngine::addTrack (const juce::String& name)
     const juce::ScopedLock sl (lock);
     tracks.add (t);
     return t;
+}
+
+Track* AudioEngine::addBus (const juce::String& name)
+{
+    for (int i = 0; i < Track::maxBuses; ++i)
+        if (getBus (i) == nullptr)
+        {
+            auto* t = addTrack (name);
+            t->isBus = true;
+            t->busIndex = i;
+            return t;
+        }
+    return nullptr;
+}
+
+Track* AudioEngine::getBus (int index) const
+{
+    for (auto* t : tracks)
+        if (t->isBus && t->busIndex == index)
+            return t;
+    return nullptr;
 }
 
 void AudioEngine::removeTrack (Track* t)
@@ -196,7 +219,7 @@ Track* AudioEngine::findTrackForTake (Track* source, const AudioClip& take) cons
     auto* channel = source->playThrough != nullptr ? source->playThrough : source;
     auto usable = [&] (const Track& t)
     {
-        if (t.isAutomation() || t.armed.load() || t.mute.load() || overlaps (t))
+        if (t.isAutomation() || t.isBus || t.armed.load() || t.mute.load() || overlaps (t))
             return false;
         if (t.playThrough == channel)
             return true;
@@ -669,6 +692,7 @@ std::shared_ptr<AudioClip> AudioEngine::splitClip (Track& t, const std::shared_p
     right->buffer = c->buffer;          // shared, read-only
     right->file = c->file;
     right->lossless = c->lossless;
+    right->handleGainDb = c->handleGainDb.load();
     right->settings = c->settings;
     right->enabled = c->enabled.load();
     right->startSample = at;
@@ -693,6 +717,8 @@ void AudioEngine::ensureScratch (int numSamples)
         dryBuffer.setSize (2, numSamples, false, true, true);
     if (inputScratch.getNumSamples() < numSamples)
         inputScratch.setSize (2, numSamples, false, true, true);
+    if (busBuffers.getNumSamples() < numSamples)
+        busBuffers.setSize (Track::maxBuses * 2, numSamples, false, true, true);
     if (sidechainBus.getNumSamples() < numSamples)
         sidechainBus.setSize (kMaxSidechainTracks * 2, numSamples, false, true, true);
     if (scratchSize < numSamples)
@@ -743,6 +769,24 @@ void AudioEngine::audioDeviceStopped()
     });
 }
 
+void AudioEngine::crossfadeLengths (const Track& t, const AudioClip& clip, juce::int64& in, juce::int64& out) const
+{
+    in = out = 0;
+    if (! autoCrossfade.load())
+        return;
+    const auto start = clip.startSample.load(), len = clip.getLength(), end = start + len;
+    const auto limit = (juce::int64) (sampleRate.load() * 2.0);
+    for (auto& o : t.clips)
+    {
+        if (o.get() == &clip || o->buffer == nullptr || ! o->enabled.load())
+            continue;
+        const auto os = o->startSample.load(), oe = o->getEnd();
+        const auto maxX = juce::jmin (limit, juce::jmin (len, o->getLength()) / 2);
+        if (os < start && oe > start && oe < end && oe - start <= maxX) in = juce::jmax (in, oe - start);
+        if (os > start && os < end && oe > end && end - os <= maxX)     out = juce::jmax (out, end - os);
+    }
+}
+
 void AudioEngine::renderClips (Track& t, juce::int64 pos, int numSamples)
 {
     // Layer mode sums overlapping takes; otherwise the newest clip wins.
@@ -775,23 +819,30 @@ void AudioEngine::renderClips (Track& t, juce::int64 pos, int numSamples)
         // edges exactly as recorded: only an edge you cut or trimmed gets a fade.
         const auto fadeLen = juce::jmax<juce::int64> (1, juce::jmin<juce::int64> (96, len / 2));
         const bool untouched = clip.lossless && losslessUntouched.load();
+        juce::int64 xIn = 0, xOut = 0;
+        if (preview == nullptr)
+            crossfadeLengths (t, clip, xIn, xOut);
+        const float clipGain = juce::Decibels::decibelsToGain (clip.handleGainDb.load(), -60.0f);
         const bool fadeStart = ! untouched || offset > 0;
         const bool fadeEnd = ! untouched || offset + len < clip.getBufferLength();
 
         for (auto p = s0; p < s1; ++p)
         {
             const int i = (int) (p - pos);
-            if (! layer)
+            const auto rel = p - start;
+            const bool inX = rel < xIn, outX = len - rel <= xOut;
+            if (! layer && ! inX && ! outX)   // a crossfade region is shared by both clips
             {
                 if (coverage[i] != 0)
                     continue;
                 coverage[i] = 1;
             }
 
-            const auto rel = p - start;
-            float g = 1.0f;
-            if (fadeStart && rel < fadeLen)        g = (float) rel / (float) fadeLen;
-            if (fadeEnd && len - rel <= fadeLen)   g = juce::jmin (g, (float) (len - rel) / (float) fadeLen);
+            float g = clipGain;
+            if (inX)  g *= std::sin (juce::MathConstants<float>::halfPi * (float) rel / (float) xIn);
+            if (outX) g *= std::cos (juce::MathConstants<float>::halfPi * (float) (rel - (len - xOut)) / (float) xOut);
+            if (fadeStart && ! inX && rel < fadeLen)        g *= (float) rel / (float) fadeLen;
+            if (fadeEnd && ! outX && len - rel <= fadeLen)  g *= (float) (len - rel) / (float) fadeLen;
 
             const auto si = offset + rel;
             dl[i] += srcL[si] * g;
@@ -828,7 +879,7 @@ void AudioEngine::processChannel (Track& t, int numSamples, bool skipLatent)
     // Insert chain
     for (auto& slot : t.inserts)
     {
-        if (slot->plugin == nullptr || slot->bypassed.load())
+        if (slot->plugin == nullptr || slot->bypassed.load() || slot->crashed.load())
             continue;
         if (skipLatent && slot->plugin->getLatencySamples() > 0)
             continue;   // low-latency monitoring
@@ -850,7 +901,19 @@ void AudioEngine::processChannel (Track& t, int numSamples, bool skipLatent)
         {
             const juce::ScopedLock pluginLock (slot->plugin->getCallbackLock());
             if (! slot->plugin->isSuspended())
-                slot->plugin->processBlock (view, midiScratch);
+            {
+                if (dynamic_cast<AmethystPlugin*> (slot->plugin.get()) != nullptr)
+                    slot->plugin->processBlock (view, midiScratch);
+                else if (! amethystGuardedProcess (slot->plugin.get(), &view, &midiScratch))
+                {
+                    // the plug-in crashed: switch it off, drop whatever it left in the buffer, carry on
+                    slot->crashed = true;
+                    slot->bypassed = true;
+                    for (int c = 0; c < view.getNumChannels(); ++c)
+                        view.clear (c, 0, numSamples);
+                    ++pluginCrashes;
+                }
+            }
         }
 
         if (slot->plugin->getTotalNumOutputChannels() == 1)
@@ -908,7 +971,7 @@ int AudioEngine::computeMaxLatency (bool recordingNow) const
     int maxL = 0;
     for (auto* t : tracks)
     {
-        if (t->playThrough != nullptr || t->isAutomation())
+        if (t->playThrough != nullptr || t->isAutomation() || t->isBus)
             continue;
         maxL = juce::jmax (maxL, channelLatency (*t, lowLat && t->monitor.load() && t->armed.load()));
     }
@@ -1170,11 +1233,14 @@ void AudioEngine::processSegment (const float* const* input, int numInputs, floa
 
     // 2. Mix each channel. Take lanes (playThrough set) are summed into their channel *before*
     //    its plug-ins and fader, so a take sounds the same whichever track row it sits on.
+    for (int c = 0; c < Track::maxBuses * 2; ++c)
+        busBuffers.clear (c, 0, numSamples);
+
     int scIndex = -1;
     for (auto* t : tracks)
     {
         ++scIndex;
-        if (t->playThrough != nullptr || t->isAutomation())
+        if (t->playThrough != nullptr || t->isAutomation() || t->isBus)
             continue;
 
         for (int c = 0; c < kMaxChannels; ++c)
@@ -1224,6 +1290,30 @@ void AudioEngine::processSegment (const float* const* input, int numInputs, floa
 
         const bool audible = ! t->mute.load() && (! anySolo || soloed);
         if (audible)
+        {
+            masterBuffer.addFrom (0, 0, trackBuffer, 0, 0, numSamples);
+            masterBuffer.addFrom (1, 0, trackBuffer, 1, 0, numSamples);
+            // post-fader sends
+            for (int b = 0; b < Track::maxBuses; ++b)
+                if (const float s = t->sends[(size_t) b].load(); s > 0.0001f)
+                {
+                    busBuffers.addFrom (b * 2, 0, trackBuffer, 0, 0, numSamples, s);
+                    busBuffers.addFrom (b * 2 + 1, 0, trackBuffer, 1, 0, numSamples, s);
+                }
+        }
+    }
+
+    // FX buses: what was sent to them, through their own plug-ins and fader (solo never mutes a bus)
+    for (auto* t : tracks)
+    {
+        if (! t->isBus || t->busIndex < 0 || t->busIndex >= Track::maxBuses)
+            continue;
+        for (int c = 0; c < kMaxChannels; ++c)
+            trackBuffer.clear (c, 0, numSamples);
+        trackBuffer.copyFrom (0, 0, busBuffers, t->busIndex * 2, 0, numSamples);
+        trackBuffer.copyFrom (1, 0, busBuffers, t->busIndex * 2 + 1, 0, numSamples);
+        processChannel (*t, numSamples, false);
+        if (! t->mute.load())
         {
             masterBuffer.addFrom (0, 0, trackBuffer, 0, 0, numSamples);
             masterBuffer.addFrom (1, 0, trackBuffer, 1, 0, numSamples);
@@ -1800,4 +1890,55 @@ ClipSettings AudioEngine::renderSettingsFor (const AudioClip& clip) const
     if (clip.lossless && losslessUntouched.load())
         s.declick = 0;   // lossless: no automatic fades at the file's own edges
     return s;
+}
+
+
+//==============================================================================
+int AudioEngine::compTake (Track& track, const std::shared_ptr<AudioClip>& chosen, juce::int64 from, juce::int64 to)
+{
+    if (chosen == nullptr || to - from < minClipSamples)
+        return 0;
+    from = juce::jmax (from, chosen->startSample.load());
+    to = juce::jmin (to, chosen->getEnd());
+    if (to - from < minClipSamples)
+        return 0;
+
+    // the takes that play through this channel
+    Track* channel = track.playThrough != nullptr ? track.playThrough : &track;
+    std::vector<Track*> group { channel };
+    for (auto* t : tracks)
+        if (t->playThrough == channel)
+            group.push_back (t);
+
+    // split a clip at the range edges and hand back the piece inside the range
+    auto middleOf = [this] (Track& t, std::shared_ptr<AudioClip> c, juce::int64 a, juce::int64 b) -> std::shared_ptr<AudioClip>
+    {
+        if (c->startSample.load() < a)
+        {
+            auto right = splitClip (t, c, a);
+            if (right == nullptr) return c->getEnd() <= b ? c : nullptr;
+            c = right;
+        }
+        if (c->getEnd() > b)
+            splitClip (t, c, b);
+        return c;
+    };
+
+    int muted = 0;
+    for (auto* t : group)
+    {
+        auto list = t->clips;   // copy: splitting changes it
+        for (auto& c : list)
+        {
+            if (c->getEnd() <= from || c->startSample.load() >= to || c->buffer == nullptr)
+                continue;
+            const bool isChosen = c == chosen;
+            if (auto piece = middleOf (*t, c, from, to))
+            {
+                piece->enabled = isChosen;
+                if (! isChosen) ++muted;
+            }
+        }
+    }
+    return muted;
 }

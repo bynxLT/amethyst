@@ -295,6 +295,12 @@ juce::String Account::getLicenseProblem() const
     return check.state == License::State::Active ? juce::String() : check.reason;
 }
 
+juce::String Account::getLicenseTimesForDebug() const
+{
+    auto f = [] (juce::int64 ms) { return ms > 0 ? juce::Time (ms).toString (true, true, true, true) : juce::String ("-"); };
+    return "issued " + f (license.iat) + " | latest seen " + f (latestSeen) + " | now " + f (juce::Time::currentTimeMillis());
+}
+
 Account::LicenseSummary Account::getLicenseSummary() const
 {
     LicenseSummary s;
@@ -316,12 +322,12 @@ Account::LicenseSummary Account::getLicenseSummary() const
     return s;
 }
 
-void Account::applyLicense (const juce::String& token, const License::Info& info)
+void Account::applyLicense (const juce::String& token, const License::Info& info, bool fromServer)
 {
     licenseToken = token;
     license = info;
     liveLegacyTier = 0;
-    latestSeen = juce::jmax (latestSeen, info.iat);   // the server's clock
+    latestSeen = fromServer ? info.iat : juce::jmax (latestSeen, info.iat);   // the server's clock
     pro = info.tier >= 1;
     ultra = info.tier >= 2;
     plan = info.plan;
@@ -492,7 +498,7 @@ void Account::checkEntitlement()
                            + ". Check that LICENSE_PRIVATE_KEY matches this build.");
                 return;
             }
-            applyLicense (r.token, info);
+            applyLicense (r.token, info, true);
             save();
             const auto problem = getLicenseProblem();
             status = problem.isNotEmpty() ? problem : planMessage (getTier());
@@ -711,7 +717,7 @@ void Account::load()
     {
         const auto info = License::verify (licenseToken);
         if (info.valid && info.sub == userId)
-            applyLicense (licenseToken, info);
+            applyLicense (licenseToken, info, false);
         else
             licenseToken.clear();   // tampered or from another account: ignored
     }

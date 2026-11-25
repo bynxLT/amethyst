@@ -99,6 +99,10 @@ private:
     juce::ComboBox inputBox;
     juce::OwnedArray<SlotRow> rows;
     juce::TextButton savePresetBtn { "Save preset..." }, loadPresetBtn { "Presets" };
+    juce::OwnedArray<juce::Slider> sendSliders;
+    juce::OwnedArray<juce::Label> sendLabels;
+    juce::TextButton addBusBtn { "+ FX bus" };
+    void rebuildSends();
     juce::Label hint;
 };
 

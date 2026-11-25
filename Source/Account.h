@@ -85,6 +85,7 @@ public:
     // One line about the license for the Account window: 1 = signed license active, 0 = live check only, -1 = paused
     struct LicenseSummary { int state = 0; juce::String text; };
     LicenseSummary getLicenseSummary() const;
+    juce::String getLicenseTimesForDebug() const;   // issue / seen / now (no tokens)
 
     juce::String getEmail() const  { return email; }
 
@@ -127,7 +128,9 @@ private:
     License::Info license;
     int liveLegacyTier = 0;                   // session only, never saved
     mutable juce::int64 latestSeen = 0;       // latest time this PC has seen (clock-rollback check)
-    void applyLicense (const juce::String& token, const License::Info&);
+    // fromServer = just issued: the server's clock is the truth, so 'latest seen' is reset to it
+    // (fixes a clock that was once set ahead); a license loaded from disk can only move it forward.
+    void applyLicense (const juce::String& token, const License::Info&, bool fromServer);
     juce::String plan;
     juce::Time proUntil, lastVerified;
     int busy = 0;

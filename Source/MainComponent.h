@@ -11,6 +11,8 @@
 #include "Exporter.h"
 #include "DiscordPresence.h"
 #include "Updater.h"
+#include "SettingsWindow.h"
+#include "Mascot.h"
 
 class Studio2026;
 
@@ -153,7 +155,7 @@ private:
     void updateAccountButton();
     LabeledKnob masterK { "Master", -60.0, 24.0, 0.0, " dB", 0.1, -6.0 };
     juce::Slider zoomSlider;
-    juce::TextButton moveToolBtn { "Move" }, trimToolBtn { "Trim" }, cutToolBtn { "Cut" };
+    juce::TextButton moveToolBtn { "Move" }, trimToolBtn { "Trim" }, cutToolBtn { "Cut" }, compToolBtn { "Comp" };
     MagnetButton snapBtn;
     void setTool (EditTool);
     void setSnap (int index);
@@ -177,6 +179,28 @@ private:
     std::unique_ptr<juce::Component> splash;   // startup animation (StartupSplash)
     Track* selectedTrackForTools();
     void registerCommands();
+    SettingsWindow::Host makeSettingsHost();
+    void showSettingsWindow (int tab = 0);
+    void maybeShowWhatsNew();
+    int lastPluginCrashes = 0;
+    int mixerPollTicks = 0;
+
+    // ---- the anime mascot: icon style and Easter eggs
+    struct ClickArea : juce::Component
+    {
+        std::function<void()> onClick;
+        void mouseDown (const juce::MouseEvent&) override { if (onClick) onClick(); }
+    };
+    ClickArea logoHit;
+    MascotPeek mascotPeek;
+    int logoClicks = 0;
+    double lastLogoClick = 0.0;
+    bool mascotClipShown = false;
+    int konamiPos = 0;
+    void peekMascot (const juce::String& kind, bool always = false);
+    void applyIconStyle (int style, bool save);
+    void applyWindowIcon();
+    bool windowIconApplied = false;
 
     juce::Image backgroundCache;
     juce::Image customBackground;      // user's picture, downscaled; empty = the default glass gradient

@@ -37,7 +37,7 @@ namespace
     std::shared_ptr<AudioClip> copyOf (const AudioClip& c)
     {
         auto n = std::make_shared<AudioClip>();
-        n->source = c.source; n->buffer = c.buffer; n->file = c.file; n->lossless = c.lossless;
+        n->source = c.source; n->buffer = c.buffer; n->file = c.file; n->lossless = c.lossless; n->handleGainDb = c.handleGainDb.load();
         n->settings = c.settings; n->name = c.name; n->colour = c.colour; n->enabled = c.enabled.load();
         n->startSample = c.startSample.load(); n->trimOffset = c.trimOffset.load(); n->trimLength = c.trimLength.load();
         return n;
@@ -363,10 +363,35 @@ Studio2026::Studio2026 (AppContext& c, juce::ApplicationProperties& p, Host h) :
         Exporter::loudnessTarget() = s->getDoubleValue ("exportLoudnessTarget", 0.0);
         ctx.engine.losslessUntouched = s->getBoolValue ("losslessUntouched", true);
         ctx.engine.returnOnStop = s->getBoolValue ("returnOnStop", true);
+        ctx.engine.autoCrossfade = s->getBoolValue ("autoCrossfade", true);
         ctx.engine.trimMp3Padding = s->getBoolValue ("trimMp3Padding", true);
     }
 
     ctx.trackAction = [this] (Track& t, int a) { trackAction (t, a); };
+    ctx.addBus = [this] (int kind, Track* sender) -> Track*
+    {
+        auto& e = ctx.engine;
+        static const char* const names[] = { "FX Bus", "Reverb Bus", "Delay Bus" };
+        auto* bus = e.addBus (names[juce::jlimit (0, 2, kind)]);
+        if (bus == nullptr) { toast ("All " + juce::String (Track::maxBuses) + " FX buses are in use", true); return nullptr; }
+        if (kind == 1)
+            if (auto p = makeBuiltin (e, "amethyst.reverb"))
+            {
+                p->setParam ("type", 2); p->setParam ("dry", 0); p->setParam ("er", 30); p->setParam ("wet", 100); p->setParam ("time", 1.8f); p->setParam ("predelay", 25);
+                e.insertPlugin (*bus, 0, std::move (p)).reset();
+            }
+        if (kind == 2)
+            if (auto p = makeBuiltin (e, "amethyst.echo"))
+            {
+                p->setParam ("sync", 1); p->setParam ("div", 8); p->setParam ("dry", 0); p->setParam ("wet", 100); p->setParam ("fb", 30);
+                e.insertPlugin (*bus, 0, std::move (p)).reset();
+            }
+        if (sender != nullptr && e.isValidChannel (sender) && ! sender->isMaster && ! sender->isBus)
+            sender->sends[(size_t) bus->busIndex] = 0.2f;
+        if (host.refresh) host.refresh();
+        toast (bus->name + " added" + (sender != nullptr && ! sender->isBus ? " - " + sender->name + " sends 20% to it" : juce::String()));
+        return bus;
+    };
     ctx.clipAction = [this] (Track& t, std::shared_ptr<AudioClip> cl, int a) { clipAction (t, std::move (cl), a); };
     registerOwnCommands();
     startTimerHz (10);
@@ -375,6 +400,7 @@ Studio2026::Studio2026 (AppContext& c, juce::ApplicationProperties& p, Host h) :
 Studio2026::~Studio2026()
 {
     ctx.trackAction = nullptr;
+    ctx.addBus = nullptr;
     ctx.clipAction = nullptr;
 }
 
@@ -432,6 +458,8 @@ void Studio2026::registerOwnCommands()
     addCommand ({ "Bounce the selected track in place", "Mixing", {}, [this] { if (auto* t = host.selectedTrack ? host.selectedTrack() : nullptr) bounceInPlace (*t); else toast ("Select a track first (in the mixer)", true); }, 1 });
     addCommand ({ "Set input level (sing for 5 seconds)", "Recording", {}, [this] { if (auto* t = host.selectedTrack ? host.selectedTrack() : nullptr) startInputLevelCheck (*t); else toast ("Arm or select a track first", true); } });
     addCommand ({ "Save as template...", "File", {}, [this] { saveAsTemplate(); } });
+    addCommand ({ "Add reverb bus", "Mixing", {}, [this] { if (ctx.addBus) ctx.addBus (1, host.selectedTrack ? host.selectedTrack() : nullptr); } });
+    addCommand ({ "Add delay bus", "Mixing", {}, [this] { if (ctx.addBus) ctx.addBus (2, host.selectedTrack ? host.selectedTrack() : nullptr); } });
     addCommand ({ "Copy selected clips / highlighted range", "Edit", "Ctrl+C", [this] { copySelection (false); } });
     addCommand ({ "Cut", "Edit", "Ctrl+X", [this] { copySelection (true); } });
     addCommand ({ "Paste at the playhead", "Edit", "Ctrl+V", [this] { paste(); } });
@@ -1469,4 +1497,13 @@ void Studio2026::deleteSelection()
             e.removeClip (*t, c.get());
     sel.clear();
     if (auto* p = getParentComponent()) p->repaint();
+}
+
+juce::StringArray Studio2026::getShortcutLines() const
+{
+    juce::StringArray lines;
+    for (auto& c : commands)
+        if (c.keys.isNotEmpty())
+            lines.add (c.keys.paddedRight (' ', 16) + c.name);
+    return lines;
 }

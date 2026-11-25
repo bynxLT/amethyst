@@ -4,6 +4,8 @@
 #include "Studio2026.h"
 #include "StartupSplash.h"
 #include "LicenseCheck.h"
+#include "SettingsWindow.h"
+#include "Plugins/Builtins.h"
 #include "UiHelpers.h"
 #include "NightcoreMaker.h"
 #include "WelcomeScreen.h"
@@ -165,7 +167,9 @@ MainComponent::MainComponent()
     moveToolBtn.onClick = [this] { setTool (EditTool::Move); };
     trimToolBtn.onClick = [this] { setTool (EditTool::Trim); };
     cutToolBtn.onClick = [this] { setTool (EditTool::Cut); };
-    for (auto* b : { &moveToolBtn, &trimToolBtn, &cutToolBtn })
+    compToolBtn.setTooltip ("Comp tool (X): swipe across a take to keep that part - the other takes on this channel are muted there. Click keeps a whole take");
+    compToolBtn.onClick = [this] { setTool (EditTool::Comp); };
+    for (auto* b : { &moveToolBtn, &trimToolBtn, &cutToolBtn, &compToolBtn })
         addAndMakeVisible (b);
     setTool (EditTool::Move);
 
@@ -212,6 +216,7 @@ MainComponent::MainComponent()
         };
         host.report = [this] (const juce::String& title, const juce::String& text) { showTextReport (title, text); };
         studio = std::make_unique<Studio2026> (ctx, appProperties, std::move (host));
+        history.beforeReplacingPlugins = [this] (Track& t) { pluginWindows.closeAllFor (t); };
         addAndMakeVisible (*studio);
         registerCommands();
     }
@@ -256,6 +261,28 @@ MainComponent::MainComponent()
         const int saved = juce::jlimit (0, Theme::kNumThemes - 1, appProperties.getUserSettings()->getIntValue ("colourTheme", 0));
         const int tier = ctx.tier ? ctx.tier() : 0;
         applyColourTheme (tier >= Theme::kThemes[saved].tier ? saved : 0, false);
+        applyIconStyle (appProperties.getUserSettings()->getIntValue ("iconStyle", 0), false);
+        addChildComponent (mascotPeek);
+        logoHit.setMouseCursor (juce::MouseCursor::PointingHandCursor);
+        logoHit.onClick = [this]
+        {
+            const double now = juce::Time::getMillisecondCounterHiRes() * 0.001;
+            logoClicks = now - lastLogoClick < 0.6 ? logoClicks + 1 : 1;
+            lastLogoClick = now;
+            if (logoClicks >= 5) { logoClicks = 0; peekMascot ("logo", true); }
+        };
+        addAndMakeVisible (logoHit);
+        if (! isTestInstance())
+        {
+            const int hour = juce::Time::getCurrentTime().getHours();
+            const auto today = juce::Time::getCurrentTime().formatted ("%Y-%m-%d");
+            if (hour < 4 && appProperties.getUserSettings()->getValue ("mascotLateNight") != today)
+            {
+                appProperties.getUserSettings()->setValue ("mascotLateNight", today);
+                juce::Component::SafePointer<MainComponent> safe (this);
+                juce::Timer::callAfterDelay (9000, [safe] { if (safe != nullptr) safe->peekMascot ("late"); });
+            }
+        }
         if (! isTestInstance() && appProperties.getUserSettings()->getBoolValue ("startupAnimation", true))
         {
             auto s = std::make_unique<StartupSplash>();
@@ -265,6 +292,11 @@ MainComponent::MainComponent()
             addAndMakeVisible (*splash);
             splash->setBounds (getLocalBounds());   // the window already has its size by now (resized() ran earlier)
             splash->toFront (false);
+        }
+        if (! isTestInstance())
+        {
+            juce::Component::SafePointer<MainComponent> safe (this);
+            juce::Timer::callAfterDelay (2800, [safe] { if (safe != nullptr) safe->maybeShowWhatsNew(); });
         }
         if (! recoveryOffered && ! isTestInstance() && appProperties.getUserSettings()->getBoolValue ("showWelcome", true))
         {
@@ -541,7 +573,7 @@ void MainComponent::resized()
     ruler.setBounds (rulerArea);
     {
         auto tools = rulerArea.withWidth (kHeaderWidth).reduced (4, 3);
-        for (auto* b : { &moveToolBtn, &trimToolBtn, &cutToolBtn })
+        for (auto* b : { &moveToolBtn, &trimToolBtn, &cutToolBtn, &compToolBtn })
         {
             b->setBounds (tools.removeFromLeft (42));
             tools.removeFromLeft (2);
@@ -564,6 +596,8 @@ void MainComponent::resized()
         studio->setBounds (getLocalBounds());
         studio->toFront (false);
     }
+    logoHit.setBounds (logoArea.withWidth (44));
+    mascotPeek.setBounds (getLocalBounds().removeFromRight (440).removeFromBottom (330).translated (0, -24));
     if (welcome != nullptr)
     {
         welcome->setBounds (getLocalBounds());
@@ -593,7 +627,7 @@ void MainComponent::setMixerVisible (bool shouldShow)
     if (shouldShow) { mixer.setAlpha (0.0f); anim.fadeIn (&mixer, 160); }
     else            { viewport.setAlpha (0.0f); anim.fadeIn (&viewport, 160); }
     for (juce::Component* c : std::initializer_list<juce::Component*> { &ruler, &viewport, &hScroll, &zoomSlider,
-                                                                         &moveToolBtn, &trimToolBtn, &cutToolBtn, &snapBtn })
+                                                                         &moveToolBtn, &trimToolBtn, &cutToolBtn, &compToolBtn, &snapBtn })
         c->setVisible (! shouldShow);
 
     mixerBtn.setToggleState (shouldShow, juce::dontSendNotification);
@@ -620,7 +654,18 @@ void MainComponent::openClipEditor (Track* t, std::shared_ptr<AudioClip> c)
 
 bool MainComponent::keyPressed (const juce::KeyPress& key)
 {
+    {
+        // up up down down left right left right B A
+        static const int code[] = { juce::KeyPress::upKey, juce::KeyPress::upKey, juce::KeyPress::downKey, juce::KeyPress::downKey,
+                                    juce::KeyPress::leftKey, juce::KeyPress::rightKey, juce::KeyPress::leftKey, juce::KeyPress::rightKey, 'B', 'A' };
+        const int kc = key.getKeyCode();
+        const int want = code[konamiPos];
+        const bool match = kc == want || (want >= 'A' && want <= 'Z' && kc == want + 32);
+        konamiPos = match ? konamiPos + 1 : (kc == juce::KeyPress::upKey ? (konamiPos == 2 ? 2 : 1) : 0);
+        if (konamiPos == 10) { konamiPos = 0; peekMascot ("konami", true); }
+    }
     if (studio != nullptr && studio->keyPressed (key)) return true;
+    if (key == juce::KeyPress (',', juce::ModifierKeys::commandModifier, 0)) { showSettingsWindow(); return true; }
     if (key == juce::KeyPress::spaceKey)               { togglePlay(); return true; }
     if (key == juce::KeyPress::tabKey)                 { setMixerVisible (! mixer.isVisible()); return true; }
     if (key == juce::KeyPress ('r', juce::ModifierKeys::commandModifier, 0)) { exportAs ((int) Exporter::Format::Wav); return true; }
@@ -632,6 +677,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
         if (ch == 'v') { setTool (EditTool::Move); return true; }
         if (ch == 't') { setTool (EditTool::Trim); return true; }
         if (ch == 'c') { setTool (EditTool::Cut);  return true; }
+        if (ch == 'x') { setTool (EditTool::Comp); return true; }
     }
     if (key == juce::KeyPress::homeKey)                { engine.setTransportPosition (0); view.startSeconds = 0.0; return true; }
     if (key == juce::KeyPress ('s', juce::ModifierKeys::commandModifier, 0)) { saveProject (false); return true; }
@@ -783,6 +829,13 @@ void MainComponent::importAudioFiles (const juce::StringArray& files, Track* tar
 //==============================================================================
 void MainComponent::timerCallback()
 {
+    if (! windowIconApplied && getPeer() != nullptr)
+        applyWindowIcon();
+    if (! mascotClipShown && engine.isPlaying() && ! engine.isRecording() && engine.getMaster().clipped.load())
+    {
+        mascotClipShown = true;   // once per session
+        peekMascot ("clip");
+    }
     if (++updateTicks >= 30 * 60 * 60 * 6)   // every 6 hours while open
     {
         updateTicks = 0;
@@ -793,6 +846,39 @@ void MainComponent::timerCallback()
     {
         discordTicks = 0;
         updateDiscord();
+    }
+
+    // mixer / plug-in changes become undo steps once they settle
+    if (++mixerPollTicks >= 10)
+    {
+        mixerPollTicks = 0;
+        history.pollMixer (juce::ModifierKeys::currentModifiers.isAnyMouseButtonDown() || engine.isRecording() || engine.isExporting());
+    }
+
+    // a plug-in crashed on the audio thread: say which one (it has been switched off)
+    if (const int crashes = engine.pluginCrashes.load(); crashes != lastPluginCrashes)
+    {
+        lastPluginCrashes = crashes;
+        juce::StringArray names;
+        auto scan = [&names] (Track& t)
+        {
+            for (int i = 0; i < (int) t.inserts.size(); ++i)
+                if (auto& s = t.inserts[(size_t) i]; s->plugin != nullptr && s->crashed.load() && ! s->crashReported)
+                {
+                    s->crashReported = true;
+                    names.add (s->plugin->getName() + " on " + (t.isMaster ? juce::String ("Master") : t.name) + " (slot " + juce::String (i + 1) + ")");
+                }
+        };
+        scan (engine.getMaster());
+        for (auto* t : engine.getTracks()) scan (*t);
+        if (! names.isEmpty())
+        {
+            if (studio != nullptr) studio->toast ("A plug-in crashed and was switched off: " + names[0], true);
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Plug-in crashed",
+                names.joinIntoString ("\n") + "\n\ncrashed while processing audio. AMETHYST switched it off so your session keeps running.\n\n"
+                "Save your project. To use it again, remove it and load it fresh from the mixer (or restart AMETHYST).");
+            if (mixer.isVisible()) mixer.rebuild();
+        }
     }
 
     if (++autosaveTicks >= 30 * 120)   // every 2 minutes (timer runs at 30 Hz)
@@ -840,6 +926,7 @@ void MainComponent::timerCallback()
     {
         engine.stop();
         juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Export finished", "The mix has been exported.");
+        if (juce::Random::getSystemRandom().nextInt (3) == 0) peekMascot ("export");
     }
 
     if (clipEditor != nullptr && (! clipEditor->isVisible() || ! clipEditor->isValid()))
@@ -960,6 +1047,7 @@ void MainComponent::setTool (EditTool tool)
     moveToolBtn.setToggleState (tool == EditTool::Move, juce::dontSendNotification);
     trimToolBtn.setToggleState (tool == EditTool::Trim, juce::dontSendNotification);
     cutToolBtn.setToggleState (tool == EditTool::Cut, juce::dontSendNotification);
+    compToolBtn.setToggleState (tool == EditTool::Comp, juce::dontSendNotification);
     for (auto* tc : trackComps)
         tc->repaint();
 }
@@ -1068,6 +1156,8 @@ void MainComponent::rebuildTrackComponents()
     trackComps.clear();
     for (auto* t : engine.getTracks())
     {
+        if (t->isBus)
+            continue;   // FX buses live in the mixer only
         auto* tc = trackComps.add (new TrackComponent (ctx, *t));
         trackHolder.addAndMakeVisible (tc);
     }
@@ -1341,6 +1431,8 @@ void MainComponent::undoEdit (bool redo)
     {
         for (auto* tc : trackComps)
             tc->repaint();
+        if (mixer.isVisible())
+            mixer.rebuild();
         if (clipEditor != nullptr && ! clipEditor->isValid())
             clipEditor = nullptr;
     }
@@ -1516,7 +1608,14 @@ void MainComponent::showToolsMenu()
     juce::PopupMenu m;
     addLastTweakedMenu (m);
     m.addSectionHeader ("Tools");
-    m.addItem (1, juce::String ("Nightcore Maker...") + (tier >= 2 ? "" : "   (Ultra Pro)"));
+    {
+        juce::PopupMenu::Item nc (juce::String ("Nightcore Maker...") + (tier >= 2 ? "" : "   (Ultra Pro)"));
+        nc.itemID = 1;
+        auto badge = std::make_unique<juce::DrawableImage>();
+        badge->setImage (Mascot::badgeImage (48));
+        nc.setImage (std::move (badge));
+        m.addItem (std::move (nc));
+    }
     m.addItem (2, "Find song tempo & key");
     m.addSeparator();
 
@@ -2057,6 +2156,14 @@ void MainComponent::showSettingsMenu()
 {
     const int tier = ctx.tier ? ctx.tier() : 0;
     juce::PopupMenu m;
+    {
+        juce::PopupMenu::Item all ("Settings...");
+        juce::Component::SafePointer<MainComponent> self (this);
+        all.setID (700900).setAction ([self] { if (self != nullptr) self->showSettingsWindow(); });
+        all.shortcutKeyDescription = "Ctrl+,";
+        m.addItem (all);
+        m.addSeparator();
+    }
     m.addItem (1, "Audio device and inputs...");
     m.addItem (2, "Plug-in manager (scan VST3)...");
     m.addSeparator();
@@ -2281,6 +2388,39 @@ void MainComponent::askDiscordAppId()
     }));
 }
 
+void MainComponent::peekMascot (const juce::String& kind, bool always)
+{
+    if (! always && ! appProperties.getUserSettings()->getBoolValue ("mascotEggs", true))
+        return;
+    if (welcome != nullptr || splash != nullptr || mascotPeek.isShowing())
+        return;
+    mascotPeek.show (Mascot::randomLine (kind));
+}
+
+void MainComponent::applyIconStyle (int style, bool save)
+{
+    Mascot::iconOn() = style == 1;
+    if (save)
+        appProperties.getUserSettings()->setValue ("iconStyle", style);
+    backgroundCache = {};
+    for (int i = 0; i < juce::Desktop::getInstance().getNumComponents(); ++i)
+        if (auto* c = juce::Desktop::getInstance().getComponent (i))
+        {
+            c->sendLookAndFeelChange();   // windows with cached headers redraw them
+            c->repaint();
+        }
+    applyWindowIcon();
+    repaint();
+}
+
+void MainComponent::applyWindowIcon()
+{
+    if (getPeer() == nullptr) return;
+    windowIconApplied = true;
+    if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
+        w->setIcon (renderAppIcon (256));
+}
+
 void MainComponent::applyColourTheme (int index, bool save)
 {
     Theme::applyTheme (index);
@@ -2431,6 +2571,7 @@ void MainComponent::registerCommands()
     s.addCommand (C { "Move tool", "Edit", "V", [this] { setTool (EditTool::Move); } });
     s.addCommand (C { "Trim tool", "Edit", "T", [this] { setTool (EditTool::Trim); } });
     s.addCommand (C { "Cut tool", "Edit", "C", [this] { setTool (EditTool::Cut); } });
+    s.addCommand (C { "Comp tool (keep the best part of each take)", "Edit", "X", [this] { setTool (EditTool::Comp); } });
     s.addCommand (C { "Add track", "Edit", {}, [this] { addTrack(); } });
     s.addCommand (C { "Mixer / arrangement", "View", "Tab", [this] { setMixerVisible (! mixer.isVisible()); } });
     s.addCommand (C { "Export WAV", "Export", "Ctrl+R", [this] { exportAs ((int) Exporter::Format::Wav); } });
@@ -2438,6 +2579,10 @@ void MainComponent::registerCommands()
     s.addCommand (C { "Export FLAC", "Export", {}, [this] { exportAs ((int) Exporter::Format::Flac); } });
     s.addCommand (C { "Nightcore Maker", "Tools", {}, [this] { showToolsMenu(); }, 2 });
     s.addCommand (C { "Find song tempo & key", "Tools", {}, [this] { analyseSong(); } });
+    s.addCommand (C { "Settings...", "Settings", "Ctrl+,", [this] { showSettingsWindow(); } });
+    s.addCommand (C { "Switch app icon (gem / anime angel)", "Settings", {}, [this] { applyIconStyle (Mascot::iconOn() ? 0 : 1, true); } });
+    s.addCommand (C { "Summon the angel", "Fun", {}, [this] { peekMascot ("summon", true); } });
+    s.addCommand (C { "What's new", "Help", {}, [this] { appProperties.getUserSettings()->removeValue ("lastSeenVersion"); maybeShowWhatsNew(); } });
     s.addCommand (C { "Audio device and inputs", "Settings", {}, [this] { showAudioSettings(); } });
     s.addCommand (C { "Plug-in manager (scan VST3)", "Settings", {}, [this] { showPluginManager(); } });
     s.addCommand (C { "Check for updates", "Settings", {}, [this] { checkForUpdates (true); } });
@@ -2540,6 +2685,36 @@ int MainComponent::runUiSelfTest (const juce::File& folder)
     mixer.select (vox);
     resized();
     snap ("ui_mixer");
+
+    // the Settings window, every page (offscreen)
+    if (folder != juce::File())
+        for (int tab = 0; tab < 6; ++tab)
+        {
+            auto win = SettingsWindow::create (makeSettingsHost(), tab);
+            win->setSize (880, 620);
+            auto img = win->createComponentSnapshot (win->getLocalBounds());
+            juce::FileOutputStream fos (folder.getChildFile ("ui_settings_" + juce::String (tab) + ".png"));
+            if (fos.openedOk()) { fos.setPosition (0); fos.truncate(); juce::PNGImageFormat().writeImageToStream (img, fos); }
+        }
+
+    // the anime mascot: icon style (logo everywhere), a peek with a speech bubble
+    {
+        applyIconStyle (1, false);
+        check (Mascot::iconOn() && Mascot::face().isValid() && Mascot::icon().isValid() && Mascot::figure().isValid(), "mascot art loads (face, icon, full figure)");
+        mascotPeek.show ("Hi! You found me!");
+        mascotPeek.jumpToUp();
+        check (mascotPeek.isVisible() && mascotPeek.getWidth() > 0, "the angel peeks in from the corner");
+        snap ("ui_mascot");
+        if (folder != juce::File())
+        {
+            auto icon = renderAppIcon (256);
+            juce::FileOutputStream fos (folder.getChildFile ("ui_mascot_icon.png"));
+            if (fos.openedOk()) { fos.setPosition (0); fos.truncate(); juce::PNGImageFormat().writeImageToStream (icon, fos); }
+        }
+        mascotPeek.setVisible (false);
+        applyIconStyle (0, false);
+        check (! Mascot::iconOn(), "switching back to the gem icon");
+    }
     setMixerVisible (false);
     juce::Desktop::getInstance().getAnimator().cancelAllAnimations (true);
     viewport.setAlpha (1.0f);
@@ -2628,6 +2803,43 @@ int MainComponent::runUiSelfTest (const juce::File& folder)
             if (c->startSample.load() < (juce::int64) (sr * 5.0) - 10 && c->getEnd() > (juce::int64) (sr * 4.0) + 10) hole = false;
         check (hole, "Ctrl+X cuts the highlighted second out of the take");
         rebuildTrackComponents();
+    }
+
+    // undo for mixer and plug-in changes
+    {
+        auto settle = [this] { history.pollMixer (false); juce::Thread::sleep (650); history.pollMixer (false); history.pollMixer (false); };
+        history.pollMixer (false);                        // baseline
+        settle();
+        vox->volumeDb = -9.0f;                            // a fader move
+        settle();
+        undoEdit (false);
+        check (std::abs (vox->volumeDb.load()) < 0.01f || std::abs (vox->volumeDb.load() + 9.0f) > 0.01f,
+               "undo puts the fader back (" + juce::String (vox->volumeDb.load(), 1) + " dB)");
+        const float afterUndo = vox->volumeDb.load();
+        undoEdit (true);
+        check (std::abs (vox->volumeDb.load() + 9.0f) < 0.01f && std::abs (afterUndo + 9.0f) > 0.01f, "redo moves it again (-9 dB)");
+
+        // insert a plug-in, then change one of its knobs
+        auto savedTier = engine.unlockedTier;
+        engine.unlockedTier = nullptr;
+        juce::PluginDescription eqDesc;
+        for (auto& d : Builtins::getDescriptions()) if (d.fileOrIdentifier == "amethyst.eq") eqDesc = d;
+        juce::String err;
+        const int freeSlot = engine.firstFreeSlot (*vox);
+        engine.insertPlugin (*vox, freeSlot, engine.createPlugin (eqDesc, err)).reset();
+        settle();
+        auto* eq = dynamic_cast<AmethystPlugin*> (vox->inserts[(size_t) freeSlot]->plugin.get());
+        if (eq != nullptr) eq->setParam ("b4_gain", 6.0f);
+        settle();
+        undoEdit (false);
+        eq = dynamic_cast<AmethystPlugin*> (vox->inserts[(size_t) freeSlot]->plugin.get());
+        check (eq != nullptr && std::abs (eq->get ("b4_gain")) < 0.01f, "undo resets a plug-in knob (band 4 gain back to 0 dB)");
+        undoEdit (false);
+        check (vox->inserts[(size_t) freeSlot]->plugin == nullptr, "undo removes a plug-in that was added");
+        undoEdit (true);
+        eq = dynamic_cast<AmethystPlugin*> (vox->inserts[(size_t) freeSlot]->plugin.get());
+        check (eq != nullptr, "redo brings the plug-in back");
+        engine.unlockedTier = savedTier;
     }
 
     // hold / drag the right mouse button over clips to delete them (no menu)
@@ -2738,4 +2950,62 @@ int MainComponent::runUiSelfTest (const juce::File& folder)
         rebuildTrackComponents();
     }
     return fails;
+}
+
+//==============================================================================
+void MainComponent::showSettingsWindow (int tab)
+{
+    SettingsWindow::show (makeSettingsHost(), this, tab);
+}
+
+SettingsWindow::Host MainComponent::makeSettingsHost()
+{
+    SettingsWindow::Host h;
+    h.engine = &engine;
+    h.props = &appProperties;
+    h.tier = [this] { return ctx.tier ? ctx.tier() : 0; };
+    h.proPrompt = [this] (const juce::String& f, int t) { if (ctx.showProPrompt) ctx.showProPrompt (f, t); };
+    h.setTheme = [this] (int i) { applyColourTheme (i, true); };
+    h.getIconStyle = [] { return Mascot::iconOn() ? 1 : 0; };
+    h.setIconStyle = [this] (int s) { applyIconStyle (s, true); };
+    h.chooseBackground = [this] { chooseBackground(); };
+    h.removeBackground = [this] { appProperties.getUserSettings()->removeValue ("backgroundImage"); loadCustomBackground(); };
+    h.setHaze = [this] (float v) { setBackgroundHaze (v); };
+    h.getCountIn = [this] { return countInBars; };
+    h.setCountIn = [this] (int b) { setCountIn (b); };
+    h.checkUpdates = [this] { checkForUpdates (true); };
+    h.openPluginManager = [this] { showPluginManager(); };
+    h.discordChanged = [this]
+    {
+        if (discord != nullptr) discord->setEnabled (appProperties.getUserSettings()->getBoolValue ("discordEnabled", true));
+        updateDiscord();
+    };
+    h.shortcutsText = [this]
+    {
+        juce::String s;
+        for (auto& line : studio != nullptr ? studio->getShortcutLines() : juce::StringArray()) s << line << "\n";
+        return s;
+    };
+    return h;
+}
+
+void MainComponent::maybeShowWhatsNew()
+{
+    auto* st = appProperties.getUserSettings();
+    const juce::String current (ProjectInfo::versionString);
+    const auto last = st->getValue ("lastSeenVersion");
+    st->setValue ("lastSeenVersion", current);
+    if (last == current || ! st->getBoolValue ("showWhatsNew", true))
+        return;
+    if (last.isEmpty() && st->getValue ("recentProjects").isEmpty())
+        return;   // brand new install: the welcome screen does the introductions
+    SettingsWindow::showWhatsNew (current, {
+        "Settings window with everything in one place (Ctrl+,)",
+        "Take comping: swipe across takes to keep the best parts (X)",
+        "Crossfades where clips overlap, and a volume handle on every clip",
+        "Undo now covers the mixer and plug-in changes",
+        "Send buses: shared reverb / delay channels with per-track sends",
+        "Plug-in crash protection: a crashing plug-in is switched off, not the app",
+        "Signed licenses that work offline for 14 days",
+    }, this);
 }

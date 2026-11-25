@@ -14,7 +14,7 @@ constexpr int kMixerStripWidth = 76;
 constexpr int kSlotPanelWidth = 330;
 constexpr int kBrowserWidth = 230;
 
-enum class EditTool { Move, Trim, Cut };
+enum class EditTool { Move, Trim, Cut, Comp };
 
 // Magnet snap sizes, in beats ("step" = a 16th note = a quarter beat).
 struct SnapOption { const char* name; double beats; };
@@ -143,6 +143,8 @@ struct AppContext
     // AMETHYST 2026 tools (Studio2026): track actions 1 bounce in place, 2 smart vocal chain, 3 set input level,
     // 4 capture last performance; clip actions 1 reverse reverb swell
     std::function<void (Track&, int action)> trackAction;
+    // New FX bus: kind 0 empty, 1 reverb, 2 delay. If sender is a track, it sends to the new bus at 20%.
+    std::function<Track* (int kind, Track* sender)> addBus;
     std::function<void (Track&, std::shared_ptr<AudioClip>, int action)> clipAction;
     TimelineSelection selection;
     TimelineClipboard clipboard;

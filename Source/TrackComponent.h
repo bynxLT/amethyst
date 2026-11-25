@@ -54,7 +54,11 @@ private:
     int lastDragX = 0;
     bool lastBypassSnap = false;
 
-    enum class Drag { None, Move, TrimStart, TrimEnd, Range };
+    enum class Drag { None, Move, TrimStart, TrimEnd, Range, Gain, Comp };
+    juce::int64 compAnchor = 0, compNow = 0;
+    float gainStartDb = 0.0f;
+    int gainStartY = 0;
+    juce::Rectangle<float> gainHandle (const AudioClip&) const;
     Drag dragMode = Drag::None;
     float hoverX = -1.0f;                     // cut-tool preview line
     const AudioClip* hoverEdgeClip = nullptr; // trim handle highlight

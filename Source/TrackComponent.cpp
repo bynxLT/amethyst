@@ -518,7 +518,8 @@ void TrackComponent::paint (juce::Graphics& g)
             }
 
             g.setColour (Theme::wave.withAlpha (0.92f * alpha));
-            it->second.thumbnail->drawChannels (g, waveArea.toNearestInt(), t0, t1, 1.0f);
+            const float zoom = juce::jlimit (0.05f, 4.0f, juce::Decibels::decibelsToGain (clip.handleGainDb.load(), -60.0f));
+            it->second.thumbnail->drawChannels (g, waveArea.toNearestInt(), t0, t1, zoom);
         }
 
         // trim handles
@@ -537,6 +538,25 @@ void TrackComponent::paint (juce::Graphics& g)
             g.fillRoundedRectangle (handle, 2.0f);
         }
 
+        // volume handle (always faintly there; bright while dragging or when the clip has a gain)
+        {
+            const auto h = gainHandle (clip);
+            const bool hot = isDragged && dragMode == Drag::Gain;
+            const float gdb = clip.handleGainDb.load();
+            if (h.getRight() > (float) lane.getX() && h.getX() < (float) lane.getRight())
+            {
+                g.setColour ((hot || std::abs (gdb) > 0.01f ? Theme::accent2 : Theme::wave).withAlpha (hot ? 1.0f : 0.5f * alpha));
+                g.fillRoundedRectangle (h.withSizeKeepingCentre (h.getWidth(), 4.0f), 2.0f);
+                if (hot || std::abs (gdb) > 0.01f)
+                {
+                    g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
+                    g.setColour (Theme::text.withAlpha (alpha));
+                    g.drawText ((gdb > 0 ? "+" : "") + juce::String (gdb, 1) + " dB", h.translated (20.0f, 0.0f).withWidth (60.0f).expanded (0.0f, 3.0f),
+                                juce::Justification::centredLeft);
+                }
+            }
+        }
+
         g.setColour (Theme::text.withAlpha (0.9f * alpha));
         g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
         juce::String label = clip.getDisplayName();
@@ -545,6 +565,36 @@ void TrackComponent::paint (juce::Graphics& g)
         if (ctx.engine.isPreviewing() && ctx.engine.isPlaying())
             label << "  (preview)";
         g.drawText (label, visible.reduced (7.0f, 3.0f).toNearestInt(), juce::Justification::topLeft, true);
+    }
+
+    // comp swipe in progress
+    if (dragMode == Drag::Comp)
+        if (auto c = draggingClip.lock())
+        {
+            const auto b = clipBounds (*c);
+            const float x0 = ctx.view.timeToX ((double) juce::jmin (compAnchor, compNow) / sr, lane);
+            const float x1 = ctx.view.timeToX ((double) juce::jmax (compAnchor, compNow) / sr, lane);
+            auto band = juce::Rectangle<float> (x0, b.getY(), juce::jmax (2.0f, x1 - x0), b.getHeight()).getIntersection (b);
+            g.setColour (Theme::monitor.withAlpha (0.35f));
+            g.fillRoundedRectangle (band, 4.0f);
+            g.setColour (Theme::monitor);
+            g.drawRoundedRectangle (band, 4.0f, 1.5f);
+        }
+
+    // crossfades: an X across each partial overlap
+    for (auto& c : track.clips)
+    {
+        juce::int64 xIn = 0, xOut = 0;
+        ctx.engine.crossfadeLengths (track, *c, xIn, xOut);
+        if (xIn <= 0) continue;
+        const auto b = clipBounds (*c);
+        const float x0 = b.getX(), x1 = ctx.view.timeToX ((double) (c->startSample.load() + xIn) / sr, lane);
+        if (x1 < (float) lane.getX() || x0 > (float) lane.getRight()) continue;
+        g.setColour (Theme::text.withAlpha (0.7f));
+        g.drawLine (x0, b.getBottom() - 2.0f, x1, b.getY() + 2.0f, 1.4f);
+        g.drawLine (x0, b.getY() + 2.0f, x1, b.getBottom() - 2.0f, 1.4f);
+        g.setColour (Theme::accent2.withAlpha (0.12f));
+        g.fillRect (juce::Rectangle<float> (x0, b.getY(), x1 - x0, b.getHeight()));
     }
 
     // Take being recorded right now
@@ -618,6 +668,12 @@ void TrackComponent::resized()
 }
 
 //==============================================================================
+juce::Rectangle<float> TrackComponent::gainHandle (const AudioClip& clip) const
+{
+    const auto b = clipBounds (clip);
+    return { b.getCentreX() - 15.0f, b.getY() + 1.0f, 30.0f, 9.0f };
+}
+
 int TrackComponent::edgeAt (const AudioClip& clip, juce::Point<int> p) const
 {
     const auto b = clipBounds (clip);
@@ -685,6 +741,17 @@ void TrackComponent::mouseDown (const juce::MouseEvent& e)
         return;
     }
 
+    // the volume handle at the top of the clip
+    if (ctx.view.tool != EditTool::Cut && gainHandle (*clip).expanded (3.0f).contains (e.position))
+    {
+        if (ctx.checkpoint) ctx.checkpoint ("Clip volume");
+        dragMode = Drag::Gain;
+        draggingClip = clip;
+        gainStartDb = clip->handleGainDb.load();
+        gainStartY = e.y;
+        return;
+    }
+
     if (! ctx.selection.isSelected (clip.get()))
         ctx.selection.selectOnly (&track, clip);
     else
@@ -693,6 +760,14 @@ void TrackComponent::mouseDown (const juce::MouseEvent& e)
 
     switch (ctx.view.tool)
     {
+        case EditTool::Comp:
+            // swipe across a take to keep that part (a click keeps the whole take)
+            dragMode = Drag::Comp;
+            draggingClip = clip;
+            compAnchor = compNow = sampleAtX (e.x, e.mods.isShiftDown());
+            repaint();
+            return;
+
         case EditTool::Cut:
             if (ctx.checkpoint) ctx.checkpoint ("Cut clip");
             splitAt (clip, sampleAtX (e.x, e.mods.isShiftDown()));
@@ -738,6 +813,25 @@ void TrackComponent::mouseDrag (const juce::MouseEvent& e)
             beginRightDelete();
         if (rightDeleting)
             deleteUnder (e.getPosition());
+        return;
+    }
+    if (dragMode == Drag::Comp)
+    {
+        compNow = sampleAtX (e.x, e.mods.isShiftDown());
+        repaint();
+        return;
+    }
+    if (dragMode == Drag::Gain)
+    {
+        if (auto c = draggingClip.lock())
+        {
+            // 0.2 dB per pixel (Shift = fine), snaps to 0 dB near the middle
+            const float perPx = e.mods.isShiftDown() ? 0.05f : 0.2f;
+            float db = juce::jlimit (-36.0f, 12.0f, gainStartDb + (float) (gainStartY - e.y) * perPx);
+            if (std::abs (db) < 0.3f) db = 0.0f;
+            c->handleGainDb = db;
+            repaint();
+        }
         return;
     }
     if (dragMode == Drag::Range)
@@ -839,6 +933,21 @@ void TrackComponent::mouseUp (const juce::MouseEvent& e)
         }
         return;
     }
+    if (dragMode == Drag::Comp)
+    {
+        dragMode = Drag::None;
+        if (auto c = draggingClip.lock())
+        {
+            juce::int64 a = juce::jmin (compAnchor, compNow), b = juce::jmax (compAnchor, compNow);
+            if (e.getDistanceFromDragStart() < 4) { a = c->startSample.load(); b = c->getEnd(); }   // click: the whole take
+            if (ctx.checkpoint) ctx.checkpoint ("Comp take");
+            ctx.engine.compTake (track, c, a, b);
+            if (ctx.discardUnchangedCheckpoint) ctx.discardUnchangedCheckpoint();
+        }
+        draggingClip.reset();
+        repaintTimeline();
+        return;
+    }
     if (dragMode == Drag::Range)
     {
         dragMode = Drag::None;
@@ -873,6 +982,9 @@ void TrackComponent::updateCursor (juce::Point<int> p)
                 cursorType = juce::MouseCursor::CrosshairCursor;
                 newHover = (float) p.x;
                 break;
+            case EditTool::Comp:
+                cursorType = juce::MouseCursor::IBeamCursor;
+                break;
             case EditTool::Trim:
                 cursorType = juce::MouseCursor::LeftRightResizeCursor;
                 edgeClip = clip.get();
@@ -880,6 +992,11 @@ void TrackComponent::updateCursor (juce::Point<int> p)
                 break;
             case EditTool::Move:
             default:
+                if (gainHandle (*clip).expanded (3.0f).contains (p.toFloat()))
+                {
+                    cursorType = juce::MouseCursor::UpDownResizeCursor;
+                    break;
+                }
                 edgeSide = edgeAt (*clip, p);
                 edgeClip = edgeSide != 0 ? clip.get() : nullptr;
                 cursorType = edgeSide != 0 ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::DraggingHandCursor;
@@ -1169,7 +1286,7 @@ void TrackComponent::handleClipMenu (const std::shared_ptr<AudioClip>& c, int r,
         {
             checkpoint ("Duplicate clip");
             auto copy = std::make_shared<AudioClip>();
-            copy->source = c->source; copy->buffer = c->buffer; copy->file = c->file; copy->lossless = c->lossless;
+            copy->source = c->source; copy->buffer = c->buffer; copy->file = c->file; copy->lossless = c->lossless; copy->handleGainDb = c->handleGainDb.load();
             copy->settings = c->settings; copy->name = c->name; copy->colour = c->colour;
             copy->enabled = c->enabled.load();
             copy->trimOffset = c->trimOffset.load(); copy->trimLength = c->trimLength.load();

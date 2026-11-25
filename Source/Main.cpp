@@ -1089,6 +1089,7 @@ public:
             const auto s = account.getLicenseSummary();
             std::printf ("signed in: %s\nplan now (offline): %s\nlicense: %s\n", account.isSignedIn() ? "yes" : "no",
                          account.getTier() >= 2 ? "Ultra Pro" : account.getTier() == 1 ? "Pro" : "Free", s.text.toRawUTF8());
+            std::printf ("times: %s\n", account.getLicenseTimesForDebug().toRawUTF8());
             setApplicationReturnValue (0);
             quit();
             return;

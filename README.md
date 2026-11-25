@@ -409,6 +409,24 @@ Keys: `Space` play/pause Â· `R` record Â· `Home` return to start Â· `Ctrl+
 - **Set input level:** the track's **...** menu. Sing your loudest part for 5 seconds and the input gain is set so peaks land around -9 dBFS.
 - **New effects:** Vocal Rider, Stereo Imager, Transient Shaper, Rhythm Gate and Auto Filter (Pro); Denoiser and Harmonizer (Ultra Pro); the Loudness Meter is free for everyone.
 
+## New in 1.1 (pro workflow)
+
+- **Settings window (Ctrl+, or gear > Settings...):** everything in one place, in tabs: Audio (device), Recording (count-in, low-latency monitoring, return to start on stop, auto-crossfade, metronome, monitor mode), Appearance (themes, background, startup animation, welcome screen), Files & export, Online (updates, Discord) and Shortcuts.
+- **What's new:** after an update, a short card lists the changes once. Reopen it from the command palette, or turn it off in Settings > Appearance.
+- **Plug-in crash protection (Windows):** if a third-party plug-in crashes while processing, AMETHYST catches it, bypasses that slot, silences its output and tells you which plug-in it was, so the session and your unsaved work carry on. Save, then remove or replace the plug-in.
+- **Take comping: Comp tool (X):** with take lanes playing through one channel, swipe across the part of a take you want. AMETHYST splits the takes at the swipe edges, keeps that part and mutes the other takes there. A click keeps a whole take. Each swipe is one undo step; muted pieces stay in place, so you can change your mind later.
+- **Crossfades:** where two clips on a track partly overlap (up to 2 s), they crossfade automatically with an equal-power curve, shown as an X over the overlap. Turn it off in Settings > Recording.
+- **Clip gain:** drag the small handle at the top centre of a clip up or down (Shift for fine steps). The waveform follows, and it snaps back to 0 dB near the middle. It's saved with the project and copied with splits and duplicates.
+- **Undo for the mixer and plug-ins:** fader, pan, mute/solo, low cut, polarity, sends and every plug-in slot (inserting, removing, bypass, mix and every knob) are now in Ctrl+Z / Ctrl+Y. A change becomes one step once you let go. Automated values are not recorded.
+- **Send buses:** in a channel's slot panel, **+ FX bus** adds a reverb bus (plate), a delay bus (1/4-note echo) or an empty bus, with a 20% send from that channel. Up to 4 buses. The send knobs on every channel are post-fader, and buses show "FX" on their mixer strip. The command palette has "Add reverb bus" and "Add delay bus" too.
+
+### The angel (anime icon and Easter eggs)
+
+- **Settings > Appearance > App icon & logo:** choose the **Amethyst gem** or the **Anime angel**. The choice changes the logo everywhere (toolbar, splash, welcome screen, plug-in windows) and the running window's icon. The installer and desktop shortcut keep the gem. The command palette has "Switch app icon" too.
+- She's the **Nightcore Maker's** icon, in its window and in the Tools menu.
+- Now and then she peeks in from the bottom-right corner. Some of the triggers: clicking the logo quickly a few times, the master clipping, finishing an export, late-night sessions, a certain famous cheat code, and "Summon the angel" in the palette. Turn the surprise ones off with **Angel Easter eggs** in Settings > Appearance.
+- The art lives in `Resources/mascot*.png` (built in as binary data); replace those files to change her.
+
 Dev checks: `--selftest` now also measures the new effects (EBU loudness reference tone, harmonizer intervals, denoiser reduction...) and the engine features (delay compensation, loop, monitor modes, channel render, reference, retro capture, metronome, low cut, low-latency monitoring). `--ui-test [folder]` drives the new UI through a hidden window and writes snapshots.
 
 ## Copy, paste and quick delete

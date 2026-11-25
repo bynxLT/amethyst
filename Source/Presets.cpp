@@ -187,6 +187,19 @@ namespace ProjectIO
                 tx->setAttribute ("lowCutHz", (double) t->lowCutHz.load());
             if (t->phaseInvert.load())
                 tx->setAttribute ("phaseInvert", true);
+            if (t->isBus)
+            {
+                tx->setAttribute ("isBus", true);
+                tx->setAttribute ("busIndex", t->busIndex);
+            }
+            {
+                juce::StringArray sends;
+                for (int b = 0; b < Track::maxBuses; ++b)
+                    if (t->sends[(size_t) b].load() > 0.0001f)
+                        sends.add (juce::String (b) + ":" + juce::String (t->sends[(size_t) b].load(), 4));
+                if (! sends.isEmpty())
+                    tx->setAttribute ("sends", sends.joinIntoString (","));
+            }
             if (t->playThrough != nullptr)
                 tx->setAttribute ("playThroughIndex", engine.getTracks().indexOf (t->playThrough));
             tx->addChildElement (ChannelPresets::toXml (*t, t->name).release());
@@ -222,6 +235,8 @@ namespace ProjectIO
                     cx->setAttribute ("trimLengthSeconds", (double) clip->getLength() / sr);
                 if (! clip->enabled.load())
                     cx->setAttribute ("enabled", false);
+                if (std::abs (clip->handleGainDb.load()) > 0.01f)
+                    cx->setAttribute ("clipGainDb", (double) clip->handleGainDb.load());
                 clip->settings.writeTo (*cx);
             }
         }
@@ -299,6 +314,17 @@ namespace ProjectIO
                 t->colour = juce::Colour::fromString (tx->getStringAttribute ("colour"));
             t->lowCutHz = (float) juce::jlimit (0.0, 1000.0, tx->getDoubleAttribute ("lowCutHz", 0.0));
             t->phaseInvert = tx->getBoolAttribute ("phaseInvert", false);
+            if (tx->getBoolAttribute ("isBus", false))
+            {
+                t->isBus = true;
+                t->busIndex = juce::jlimit (0, Track::maxBuses - 1, tx->getIntAttribute ("busIndex", 0));
+            }
+            for (auto& item : juce::StringArray::fromTokens (tx->getStringAttribute ("sends"), ",", {}))
+            {
+                const int b = item.upToFirstOccurrenceOf (":", false, false).getIntValue();
+                if (juce::isPositiveAndBelow (b, Track::maxBuses))
+                    t->sends[(size_t) b] = (float) juce::jlimit (0.0, 1.0, item.fromFirstOccurrenceOf (":", false, false).getDoubleValue());
+            }
             if (tx->hasAttribute ("playThroughIndex"))
                 routes.emplace_back (t, tx->getIntAttribute ("playThroughIndex"));
 
@@ -332,6 +358,7 @@ namespace ProjectIO
                 if (auto clip = engine.loadClip (clipFile, start))
                 {
                     clip->enabled = cx->getBoolAttribute ("enabled", true);
+                    clip->handleGainDb = (float) juce::jlimit (-36.0, 12.0, cx->getDoubleAttribute ("clipGainDb", 0.0));
                     clip->name = cx->getStringAttribute ("name");
                     if (cx->hasAttribute ("colour"))
                         clip->colour = juce::Colour::fromString (cx->getStringAttribute ("colour"));

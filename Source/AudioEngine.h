@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <JuceHeader.h>
 #include "Track.h"
@@ -20,6 +20,8 @@ public:
 
     //==== Tracks ==============================================================
     Track* addTrack (const juce::String& name);
+    Track* addBus (const juce::String& name);   // nullptr when all buses are in use
+    Track* getBus (int index) const;
     void removeTrack (Track*);
     void clearTracks();
     const juce::OwnedArray<Track>& getTracks() const noexcept { return tracks; }
@@ -67,6 +69,12 @@ public:
     // Stopping jumps back to where playback / recording started (Settings > Return to start on stop)
     std::atomic<bool> returnOnStop { true };
 
+    // Clips on one track that overlap a little (not fully - those are doubles) crossfade over the overlap
+    std::atomic<bool> autoCrossfade { true };
+    // Crossfade lengths for a clip: how much of its start / end overlaps a neighbour on the same track
+    // (partial overlaps only, at most 2 s and half of either clip - fully stacked doubles don't count).
+    void crossfadeLengths (const Track&, const AudioClip&, juce::int64& in, juce::int64& out) const;
+
     //==== Session notes (message thread only): markers and lyrics, saved with the project ====
     struct Marker { double seconds = 0.0; juce::String name; };
     std::vector<Marker> markers;   // kept sorted by time
@@ -89,6 +97,11 @@ public:
     //==== Plug-in delay compensation ===============================================
     // Every channel is delayed to line up with the channel whose plug-ins add the most latency.
     int getMaxChannelLatency() const noexcept { return maxLatency.load(); }
+
+    //==== Plug-in crash protection ==============================================
+    // A third-party plug-in that crashes while processing is switched off (its slot is marked crashed);
+    // the count goes up so the UI can tell the user which one.
+    std::atomic<int> pluginCrashes { 0 };
 
     //==== Live master loudness (for the toolbar readout and reference matching) ===
     std::atomic<float> masterShortTermLufs { -100.0f }, masterIntegratedLufs { -100.0f };
@@ -175,6 +188,11 @@ public:
     void trimClipStart (AudioClip&, juce::int64 newStart);   // keeps the end where it is
     void trimClipEnd (AudioClip&, juce::int64 newEnd);       // keeps the start where it is
     std::shared_ptr<AudioClip> splitClip (Track&, const std::shared_ptr<AudioClip>&, juce::int64 at); // returns the new right-hand clip
+
+    // Take comping: within [from, to) keep the part of `chosen` (on `track`) and mute every other take that
+    // plays through the same channel (the channel and its take lanes, and other takes on the same row).
+    // Clips are split at the edges. Returns how many other takes were muted there.
+    int compTake (Track& track, const std::shared_ptr<AudioClip>& chosen, juce::int64 from, juce::int64 to);
     static constexpr int minClipSamples = 256;
     bool canImport (const juce::File&);
     bool replaceClipSource (AudioClip&, const juce::File&);
@@ -266,7 +284,7 @@ private:
     juce::TimeSliceThread writerThread { "VocalDAW disk writer" };
     std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> bounceWriter;
 
-    juce::AudioBuffer<float> trackBuffer, masterBuffer, dryBuffer, inputScratch;
+    juce::AudioBuffer<float> trackBuffer, masterBuffer, dryBuffer, inputScratch, busBuffers;
     static constexpr int kMaxSidechainTracks = 64;
     juce::AudioBuffer<float> sidechainBus;   // 2 channels per track: each track's output from the latest block
     juce::HeapBlock<float> silence;

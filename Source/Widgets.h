@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Theme.h"
+#include "Mascot.h"
 
 // Slider with a right-click menu: Reset, Copy value, Paste value, Type in value...
 class ValueSlider : public juce::Slider
@@ -324,9 +325,14 @@ private:
     juce::String label { "Beat" };
 };
 
-// Brand mark: a glowing amethyst waveform gem.
+// Brand mark: a glowing amethyst waveform gem (or the anime mascot's face when that icon style is on).
 inline void drawLogoMark (juce::Graphics& g, juce::Rectangle<float> r)
 {
+    if (Mascot::iconOn())
+    {
+        Mascot::drawBadge (g, r);
+        return;
+    }
     const float s = juce::jmin (r.getWidth(), r.getHeight());
     const float k = juce::jmax (1.0f, s / 36.0f);   // stroke scale: 1 at toolbar size
     const auto b = juce::Rectangle<float> (s, s).withCentre (r.getCentre());
@@ -373,7 +379,10 @@ inline juce::Image renderAppIcon (int size)
     g.setGradientFill (glow);
     g.fillRoundedRectangle (r, corner);
     g.setColour (juce::Colours::white.withAlpha (0.18f));
+    if (Mascot::iconOn())
+        Mascot::drawIconTile (g, r.reduced ((float) size * 0.02f), corner);
+    else
+        drawLogoMark (g, r.reduced ((float) size * 0.17f));
     g.drawRoundedRectangle (r.reduced ((float) size * 0.01f), corner, juce::jmax (1.0f, (float) size * 0.012f));
-    drawLogoMark (g, r.reduced ((float) size * 0.17f));
     return img;
 }

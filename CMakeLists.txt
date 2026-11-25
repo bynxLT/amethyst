@@ -10,7 +10,7 @@ set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "macOS architectures")
 # Windows: link the C++ runtime statically, so the installer needs no Visual C++ redistributable.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project(VocalDAW VERSION 1.0.0 LANGUAGES C CXX)
+project(VocalDAW VERSION 1.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -50,6 +50,15 @@ juce_add_gui_app(VocalDAW
 
 juce_generate_juce_header(VocalDAW)
 
+# the anime mascot (alternative icon, Nightcore Maker icon, Easter eggs)
+juce_add_binary_data(AmethystArt
+    HEADER_NAME AmethystArt.h
+    NAMESPACE AmethystArt
+    SOURCES
+        Resources/mascot.png
+        Resources/mascot_face.png
+        Resources/mascot_icon.png)
+
 target_sources(VocalDAW PRIVATE
     Source/Main.cpp
     Source/AudioEngine.cpp
@@ -79,6 +88,8 @@ target_sources(VocalDAW PRIVATE
     Source/SelfTest2.cpp
     Source/Studio2026.cpp
     Source/License.cpp
+    Source/SettingsWindow.cpp
+    Source/PluginGuard.cpp
     Source/Plugins/VocalEffects.cpp
     Source/Plugins/TunePlugin.cpp
     Source/Account.cpp
@@ -141,6 +152,7 @@ endif()
 
 target_link_libraries(VocalDAW
     PRIVATE
+        AmethystArt
         juce::juce_audio_utils
         juce::juce_audio_processors
         juce::juce_dsp

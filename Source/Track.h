@@ -9,6 +9,8 @@ struct InsertSlot
     std::unique_ptr<juce::AudioPluginInstance> plugin;
     std::atomic<bool>  bypassed { false };
     std::atomic<float> mix { 1.0f };   // wet/dry, 0..1
+    std::atomic<bool>  crashed { false };   // the plug-in crashed while processing: kept off until reloaded
+    bool crashReported = false;             // message thread: the user has been told
     int numChannels = 2;               // channels handed to processBlock (set by the engine)
 };
 
@@ -29,7 +31,8 @@ struct AudioClip
     int renderGeneration = 0;                  // message thread only
     juce::String name;                         // display name (empty = file name)
     juce::Colour colour;                       // transparent = default clip colour
-    bool lossless = false;                     // WAV / AIFF / FLAC: original edges play untouched (see AudioEngine::losslessUntouched)
+    bool lossless = false;
+    std::atomic<float> handleGainDb { 0.0f };  // clip volume handle (applied live while playing)                     // WAV / AIFF / FLAC: original edges play untouched (see AudioEngine::losslessUntouched)
 
     juce::String getDisplayName() const { return name.isNotEmpty() ? name : file.getFileNameWithoutExtension(); }
 
@@ -136,6 +139,12 @@ public:
     std::atomic<bool>  phaseInvert { false };
     std::atomic<float> lowCutHz { 0.0f };      // 0 = off, else a 12 dB/oct high-pass at this frequency
     juce::Colour colour;                       // message thread; transparent = default look
+
+    // Send buses: a bus is a channel with no clips that other channels send to (post-fader).
+    static constexpr int maxBuses = 4;
+    bool isBus = false;                        // message thread (set once when created)
+    int busIndex = -1;                         // 0..maxBuses-1 for a bus
+    std::array<std::atomic<float>, maxBuses> sends {};   // send level to each bus (linear 0..1)
 
     // Plug-in delay compensation: total latency of this channel's inserts (published for the UI)
     std::atomic<int> latencySamples { 0 };

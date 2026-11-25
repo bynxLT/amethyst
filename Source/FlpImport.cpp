@@ -742,6 +742,7 @@ namespace
         auto c = std::make_shared<AudioClip>();
         c->file = src.file;
         c->lossless = src.lossless;
+        c->handleGainDb = src.handleGainDb.load();
         c->source = src.source;
         c->buffer = src.source;
         c->startSample = start;
