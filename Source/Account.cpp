@@ -1,4 +1,4 @@
-﻿#include "Account.h"
+#include "Account.h"
 #include "AvatarMedia.h"
 
 bool amethystProtect (const void* data, std::size_t size, std::vector<unsigned char>& out, bool encrypt);
@@ -208,6 +208,27 @@ SupabaseApi::Entitlement SupabaseApi::fetchEntitlement (const juce::String& acce
     return e;
 }
 
+SupabaseApi::LicenseResult SupabaseApi::fetchLicense (const juce::String& accessToken) const
+{
+    LicenseResult l;
+    auto r = send ("POST", "/functions/v1/license", "{}", accessToken);
+    l.networkError = r.networkError.isNotEmpty();
+    if (r.status == 404)
+    {
+        l.notDeployed = true;
+        return l;
+    }
+    if (r.status != 200 || ! r.json.isObject())
+    {
+        l.error = errorText (r);
+        return l;
+    }
+    l.token = r.json.getProperty ("license", {}).toString();
+    l.ok = l.token.isNotEmpty();
+    if (! l.ok) l.error = "empty license";
+    return l;
+}
+
 void SupabaseApi::signOut (const juce::String& accessToken) const
 {
     if (accessToken.isNotEmpty())
@@ -255,15 +276,57 @@ void Account::runAsync (Work work, Done done)
     });
 }
 
-bool Account::isPro() const
+int Account::getTier() const
 {
-    if (! pro || ! isSignedIn())
-        return false;
-    const auto now = juce::Time::getCurrentTime();
-    if (proUntil.toMilliseconds() != 0 && proUntil < now)
-        return false;
-    // Works offline for a while after the last successful check.
-    return now - lastVerified < juce::RelativeTime::days (offlineGraceDays);
+    if (! isSignedIn())
+        return 0;
+    const auto now = juce::Time::currentTimeMillis();
+    const auto check = License::evaluate (license, now, latestSeen, userId);
+    if (check.state != License::State::ClockRolledBack)
+        latestSeen = juce::jmax (latestSeen, now);
+    return juce::jmax (check.state == License::State::Active ? check.tier : 0, liveLegacyTier);
+}
+
+juce::String Account::getLicenseProblem() const
+{
+    if (! isSignedIn() || liveLegacyTier > 0)
+        return {};
+    const auto check = License::evaluate (license, juce::Time::currentTimeMillis(), latestSeen, userId);
+    return check.state == License::State::Active ? juce::String() : check.reason;
+}
+
+Account::LicenseSummary Account::getLicenseSummary() const
+{
+    LicenseSummary s;
+    if (! isSignedIn())
+        return s;
+    const auto check = License::evaluate (license, juce::Time::currentTimeMillis(), latestSeen, userId);
+    if (check.state == License::State::Active)
+    {
+        s.state = 1;
+        s.text = "Signed license verified - works offline until " + juce::Time (license.exp).formatted ("%d %b %Y");
+    }
+    else if (liveLegacyTier > 0 || ! license.valid)
+        s.text = "Checked live (no signed license saved) - needs internet";
+    else
+    {
+        s.state = -1;
+        s.text = check.reason;
+    }
+    return s;
+}
+
+void Account::applyLicense (const juce::String& token, const License::Info& info)
+{
+    licenseToken = token;
+    license = info;
+    liveLegacyTier = 0;
+    latestSeen = juce::jmax (latestSeen, info.iat);   // the server's clock
+    pro = info.tier >= 1;
+    ultra = info.tier >= 2;
+    plan = info.plan;
+    proUntil = juce::Time (info.proUntil);
+    lastVerified = juce::Time::getCurrentTime();
 }
 
 juce::String Account::getPlanText() const
@@ -300,6 +363,9 @@ void Account::clearSession()
     plan.clear();
     proUntil = {};
     lastVerified = {};
+    licenseToken.clear();
+    license = {};
+    liveLegacyTier = 0;   // latestSeen is kept on purpose (clock-rollback check survives signing out)
     avatar = {};
     avatarCacheFile().deleteFile();
     save();
@@ -387,23 +453,59 @@ void Account::checkEntitlement()
 
     auto apiCopy = api;
     const auto token = accessToken, uid = userId;
-    runAsync<SupabaseApi::Entitlement> ([apiCopy, token, uid] { return apiCopy.fetchEntitlement (token, uid); },
-                                        [this] (const SupabaseApi::Entitlement& e)
+    auto planMessage = [] (int tier) { return tier >= 2 ? juce::String ("AMETHYST Ultra Pro is active. Enjoy!")
+                                              : tier == 1 ? juce::String ("AMETHYST Pro is active. Enjoy!") : juce::String ("You're on the Free plan."); };
+
+    // 2) live check of the entitlements table: used when the license server is missing or failing, for this
+    //    session only (never saved) - a server problem must never take a paying user's plan away
+    auto liveCheck = [this, apiCopy, token, uid, planMessage] (juce::String note)
     {
-        if (! e.ok)
+        runAsync<SupabaseApi::Entitlement> ([apiCopy, token, uid] { return apiCopy.fetchEntitlement (token, uid); },
+                                            [this, planMessage, note] (const SupabaseApi::Entitlement& e)
         {
-            status = e.networkError ? "Offline - using your last known plan." : "Couldn't check your plan: " + e.error;
+            if (! e.ok)
+            {
+                status = e.networkError ? "Offline - and no saved license yet." : "Couldn't check your plan: " + e.error;
+                return;
+            }
+            liveLegacyTier = e.isUltra ? 2 : (e.isPro ? 1 : 0);
+            pro = e.isPro;
+            ultra = e.isUltra;
+            plan = e.plan;
+            proUntil = e.proUntil;
+            status = planMessage (liveLegacyTier) + (note.isNotEmpty() ? "\n(" + note + ")" : juce::String());
+            if (liveLegacyTier >= 1)
+                fetchAvatar();
+        });
+    };
+
+    // 1) signed license from the license server
+    runAsync<SupabaseApi::LicenseResult> ([apiCopy, token] { return apiCopy.fetchLicense (token); },
+                                          [this, planMessage, liveCheck] (const SupabaseApi::LicenseResult& r)
+    {
+        if (r.ok)
+        {
+            const auto info = License::verify (r.token);
+            if (! info.valid || info.sub != userId)
+            {
+                liveCheck ("license server: its license didn't verify - " + (info.valid ? juce::String ("wrong account") : info.error)
+                           + ". Check that LICENSE_PRIVATE_KEY matches this build.");
+                return;
+            }
+            applyLicense (r.token, info);
+            save();
+            const auto problem = getLicenseProblem();
+            status = problem.isNotEmpty() ? problem : planMessage (getTier());
+            if (isPro())
+                fetchAvatar();
             return;
         }
-        pro = e.isPro;
-        ultra = e.isUltra;
-        plan = e.plan;
-        proUntil = e.proUntil;
-        lastVerified = juce::Time::getCurrentTime();
-        save();
-        status = ultra ? "AMETHYST Ultra Pro is active. Enjoy!" : (pro ? "AMETHYST Pro is active. Enjoy!" : "You're on the Free plan.");
-        if (pro)
-            fetchAvatar();
+        if (r.networkError)
+        {
+            status = "Offline - using your saved license.";
+            return;
+        }
+        liveCheck (r.notDeployed ? juce::String() : "license server: " + (r.error.isNotEmpty() ? r.error : juce::String ("error")));
     });
 }
 
@@ -572,11 +674,9 @@ void Account::save()
     obj->setProperty ("email", email);
     obj->setProperty ("userId", userId);
     obj->setProperty ("refresh", refreshToken);
-    obj->setProperty ("pro", pro);
-    obj->setProperty ("ultra", ultra);
-    obj->setProperty ("plan", plan);
-    obj->setProperty ("proUntil", proUntil.toMilliseconds());
-    obj->setProperty ("verified", lastVerified.toMilliseconds());
+    obj->setProperty ("license", licenseToken);   // signed; editing it breaks the signature
+    latestSeen = juce::jmax (latestSeen, juce::Time::currentTimeMillis());
+    obj->setProperty ("seen", latestSeen);
     const auto json = juce::JSON::toString (juce::var (obj), true);
 
     std::vector<unsigned char> blob;
@@ -605,11 +705,18 @@ void Account::load()
     email = v.getProperty ("email", {}).toString();
     userId = v.getProperty ("userId", {}).toString();
     refreshToken = v.getProperty ("refresh", {}).toString();
-    pro = (bool) v.getProperty ("pro", false);
-    ultra = (bool) v.getProperty ("ultra", false);
-    plan = v.getProperty ("plan", {}).toString();
-    proUntil = juce::Time ((juce::int64) v.getProperty ("proUntil", 0));
-    lastVerified = juce::Time ((juce::int64) v.getProperty ("verified", 0));
+    latestSeen = (juce::int64) v.getProperty ("seen", 0);
+    licenseToken = v.getProperty ("license", {}).toString();
+    if (licenseToken.isNotEmpty())
+    {
+        const auto info = License::verify (licenseToken);
+        if (info.valid && info.sub == userId)
+            applyLicense (licenseToken, info);
+        else
+            licenseToken.clear();   // tampered or from another account: ignored
+    }
+    if (const auto problem = getLicenseProblem(); problem.isNotEmpty() && licenseToken.isNotEmpty())
+        status = problem;   // e.g. the clock was set back while AMETHYST was closed
 
     if (refreshToken.isNotEmpty() && avatarCacheFile().existsAsFile())
         avatar = juce::ImageFileFormat::loadFrom (avatarCacheFile()); // shows instantly; refreshed after sign-in check

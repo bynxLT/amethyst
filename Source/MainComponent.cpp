@@ -3,6 +3,7 @@
 #include "FlpImport.h"
 #include "Studio2026.h"
 #include "StartupSplash.h"
+#include "LicenseCheck.h"
 #include "UiHelpers.h"
 #include "NightcoreMaker.h"
 #include "WelcomeScreen.h"
@@ -2677,6 +2678,33 @@ int MainComponent::runUiSelfTest (const juce::File& folder)
         keyPressed (juce::KeyPress (juce::KeyPress::spaceKey));
         check (engine.getTransportPosition() == (juce::int64) (sr * 9.0), "with the setting off, stop stays where it is");
         engine.returnOnStop = true;
+    }
+
+    // license-check frames (rendered offscreen): checking, Ultra success, failure
+    if (folder != juce::File())
+    {
+        auto frame = [] (int steps, bool ok, bool bad, double t, double since)
+        {
+            LicenseCheck::Frame f;
+            f.stepsDone = steps; f.success = ok; f.failed = bad; f.tier = 2; f.t = t; f.sinceEnd = since;
+            f.error = "Invalid login credentials";
+            return f;
+        };
+        const std::pair<const char*, LicenseCheck::Frame> frames[] = {
+            { "license_checking", frame (2, false, false, 1.3, 0.0) },
+            { "license_ultra", frame (4, true, false, 2.5, 0.9) },
+            { "license_failed", frame (1, false, true, 1.0, 0.6) } };
+        for (auto& [name, fr] : frames)
+        {
+            juce::Image img (juce::Image::ARGB, 480, 560, true);
+            {
+                juce::Graphics g (img);
+                g.fillAll (Theme::windowBg);
+                LicenseCheck::paintFrame (g, img.getBounds().toFloat(), fr);
+            }
+            juce::FileOutputStream fos (folder.getChildFile (juce::String (name) + ".png"));
+            if (fos.openedOk()) { fos.setPosition (0); fos.truncate(); juce::PNGImageFormat().writeImageToStream (img, fos); }
+        }
     }
 
     // startup animation frames (rendered offscreen)

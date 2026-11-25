@@ -78,6 +78,7 @@ target_sources(VocalDAW PRIVATE
     Source/Plugins/ExtraEffects.cpp
     Source/SelfTest2.cpp
     Source/Studio2026.cpp
+    Source/License.cpp
     Source/Plugins/VocalEffects.cpp
     Source/Plugins/TunePlugin.cpp
     Source/Account.cpp

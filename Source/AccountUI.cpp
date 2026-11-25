@@ -1,4 +1,5 @@
 #include "AccountUI.h"
+#include "LicenseCheck.h"
 #include "AvatarMedia.h"
 
 namespace
@@ -156,10 +157,15 @@ AccountPanel::AccountPanel (Account& a) : account (a)
 
     signInBtn.setColour (juce::TextButton::buttonOnColourId, Theme::accent);
     signInBtn.setToggleState (true, juce::dontSendNotification); // glowing primary button
-    signInBtn.onClick = [this] { account.signIn (emailBox.getText(), passwordBox.getText()); };
+    signInBtn.onClick = [this]
+    {
+        if (emailBox.getText().trim().isNotEmpty() && passwordBox.getText().isNotEmpty())
+            startLicenseCheck (true);
+        account.signIn (emailBox.getText(), passwordBox.getText());
+    };
     signUpBtn.onClick = [this] { account.signUp (emailBox.getText(), passwordBox.getText()); };
     forgotBtn.onClick = [this] { account.sendPasswordReset (emailBox.getText()); };
-    refreshBtn.onClick = [this] { account.refreshStatus(); };
+    refreshBtn.onClick = [this] { startLicenseCheck (false); account.refreshStatus(); };
     signOutBtn.onClick = [this] { account.signOut(); passwordBox.clear(); };
     upgradeBtn.setColour (juce::TextButton::buttonOnColourId, Theme::accent2);
     upgradeBtn.setToggleState (true, juce::dontSendNotification);
@@ -199,6 +205,17 @@ AccountPanel::~AccountPanel()
 {
     stopTimer();
     account.removeChangeListener (this);
+}
+
+void AccountPanel::startLicenseCheck (bool signingIn)
+{
+    auto check = std::make_unique<LicenseCheck> (account, signingIn ? LicenseCheck::Mode::SignIn : LicenseCheck::Mode::Refresh);
+    juce::Component::SafePointer<AccountPanel> safe (this);
+    check->onFinished = [safe] { if (safe != nullptr) { safe->licenseCheck = nullptr; safe->refresh(); } };
+    licenseCheck = std::move (check);
+    addAndMakeVisible (*licenseCheck);
+    licenseCheck->setBounds (getLocalBounds());
+    licenseCheck->toFront (false);
 }
 
 void AccountPanel::timerCallback()
@@ -315,6 +332,20 @@ void AccountPanel::paint (juce::Graphics& g)
         g.setFont (juce::FontOptions (12.5f));
         g.drawText (account.getPlanText(), badge.reduced (16.0f, 0.0f).toNearestInt(), juce::Justification::centredRight, true);
 
+        // license line: verified / live only / paused
+        {
+            const auto lic = account.getLicenseSummary();
+            r.removeFromTop (6);
+            auto line = r.removeFromTop (18);
+            const auto col = lic.state > 0 ? Theme::accent : lic.state < 0 ? Theme::record : Theme::monitor;
+            g.setColour (col);
+            g.fillEllipse (line.removeFromLeft (10).toFloat().withSizeKeepingCentre (7.0f, 7.0f));
+            line.removeFromLeft (6);
+            g.setColour (col.brighter (0.4f));
+            g.setFont (juce::FontOptions (12.0f));
+            g.drawText (lic.text, line, juce::Justification::centredLeft, true);
+        }
+
         if (! pro)
         {
             r.removeFromTop (14);
@@ -335,6 +366,8 @@ void AccountPanel::paint (juce::Graphics& g)
 
 void AccountPanel::resized()
 {
+    if (licenseCheck != nullptr)
+        licenseCheck->setBounds (getLocalBounds());
     bg = {};
     auto r = getLocalBounds().reduced (30, 26);
     r.removeFromTop (68);

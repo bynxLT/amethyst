@@ -57,6 +57,8 @@ private:
     std::unique_ptr<juce::FileChooser> chooser;
     juce::Rectangle<int> avatarArea;
     juce::Image bg;
+    std::unique_ptr<juce::Component> licenseCheck;   // LicenseCheck animation while signing in / refreshing
+    void startLicenseCheck (bool signingIn);
 };
 
 // Shown when a Free user reaches for a Pro feature.

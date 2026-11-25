@@ -3,3 +3,4 @@ build-mac/
 *.dmg
 config/supabase.json
 dist/
+config/license_private.pem

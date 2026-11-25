@@ -1,5 +1,6 @@
 #include <JuceHeader.h>
 #include "MainComponent.h"
+#include "License.h"
 #include "GlassLookAndFeel.h"
 #include "Plugins/Builtins.h"
 #include "Account.h"
@@ -30,7 +31,7 @@ public:
         // headless test modes may run next to an open AMETHYST window
         const auto args = juce::JUCEApplicationBase::getCommandLineParameters();
         return args.contains ("--selftest") || args.contains ("--flp-") || args.contains ("--fst-test") || args.contains ("--account-test")
-            || args.contains ("--window-test") || args.contains ("--key-test") || args.contains ("--ui-test") || args.contains ("--mp3-test") || args.contains ("--discord-test") || args.contains ("--preview") || args.contains ("--snapshot");
+            || args.contains ("--window-test") || args.contains ("--key-test") || args.contains ("--ui-test") || args.contains ("--mp3-test") || args.contains ("--license-verify") || args.contains ("--license-status") || args.contains ("--discord-test") || args.contains ("--preview") || args.contains ("--snapshot");
     }
 
     // Headless check of the clip effect renderer:  VocalDAW.exe --selftest
@@ -1071,6 +1072,36 @@ public:
                              g.found ? "gapless" : "no gapless info", (long long) g.frames, g.encoderDelay, g.padding, g.trimStart, (long long) g.validLength);
             }
             setApplicationReturnValue (0);
+            quit();
+            return;
+        }
+
+        // Dev: what this PC's saved account has, license-wise (no tokens or email printed): --license-status
+        if (commandLine.contains ("--license-status"))
+        {
+            juce::PropertiesFile::Options opts;
+            opts.applicationName = "AMETHYST";
+            opts.filenameSuffix = ".settings";
+            opts.folderName = "AMETHYST";
+            opts.osxLibrarySubFolder = "Application Support";
+            juce::PropertiesFile settings (opts);
+            Account account (settings, {}, {});   // offline: only reads what's saved
+            const auto s = account.getLicenseSummary();
+            std::printf ("signed in: %s\nplan now (offline): %s\nlicense: %s\n", account.isSignedIn() ? "yes" : "no",
+                         account.getTier() >= 2 ? "Ultra Pro" : account.getTier() == 1 ? "Pro" : "Free", s.text.toRawUTF8());
+            setApplicationReturnValue (0);
+            quit();
+            return;
+        }
+
+        // Dev: checks a license token against the built-in public key: --license-verify <token>
+        if (commandLine.contains ("--license-verify"))
+        {
+            const auto args = juce::StringArray::fromTokens (commandLine, true);
+            const auto info = License::verify (args[args.indexOf ("--license-verify") + 1].unquoted());
+            std::printf ("%s: %s tier %d plan %s exp %lld\n", info.valid ? "valid" : "INVALID", info.valid ? info.sub.toRawUTF8() : info.error.toRawUTF8(),
+                         info.tier, info.plan.toRawUTF8(), (long long) info.exp);
+            setApplicationReturnValue (info.valid ? 0 : 1);
             quit();
             return;
         }

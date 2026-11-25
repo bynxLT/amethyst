@@ -3,6 +3,9 @@
 #include "Loudness.h"
 #include "Plugins/Builtins.h"
 #include "ClipFx.h"
+#include "License.h"
+#include "LicensePublicKey.h"
+#include "LicenseTestVectors.h"
 
 // Self-tests for the AMETHYST 2026 second wave (effects, engine features). Called from --selftest.
 // Each test prints [ok] / [FAIL]; returns the number of failures.
@@ -518,11 +521,51 @@ namespace
     }
 }
 
+namespace
+{
+    void testLicense()
+    {
+        namespace V = LicenseTestVectors;
+        using License::State;
+        const auto good = License::verify (V::valid, V::modulusHex);
+        report (good.valid && good.tier == 2 && good.sub == "test-user" && good.exp == V::iat + 14 * V::day,
+                "license: a server-signed license verifies (tier " + juce::String (good.tier) + ", " + good.sub + ")");
+        const auto forged = License::verify (V::forged, V::modulusHex);
+        const auto flipped = License::verify (V::badSig, V::modulusHex);
+        report (! forged.valid && ! flipped.valid, "license: an edited payload (" + forged.error + ") and a 1-bit signature change (" + flipped.error + ") are rejected");
+        const auto otherKey = License::verify (V::valid);   // the real public key: test licenses must not pass
+        report (! otherKey.valid, "license: a license signed with another key is rejected (" + otherKey.error + ")");
+        report (! License::verify ("garbage").valid && ! License::verify ("abc.def").valid, "license: junk tokens are rejected");
+
+        const auto now = V::iat + 2 * V::day;
+        auto st = [] (State s) { return juce::String ((int) s); };
+        const auto active = License::evaluate (good, now, now, "test-user");
+        report (active.state == State::Active && active.tier == 2, "license: active 2 days after issue (offline) -> tier " + juce::String (active.tier));
+        const auto expired = License::evaluate (good, V::iat + 15 * V::day, V::iat + 15 * V::day, "test-user");
+        report (expired.state == State::Expired && expired.tier == 0, "license: after 14 days offline it asks to go online (state " + st (expired.state) + ")");
+        const auto rolled = License::evaluate (good, V::iat + 1 * V::day, V::iat + 5 * V::day, "test-user");
+        report (rolled.state == State::ClockRolledBack && rolled.tier == 0, "license: clock set back 4 days is caught (state " + st (rolled.state) + ")");
+        const auto beforeIssue = License::evaluate (good, V::iat - 3 * V::day, 0, "test-user");
+        report (beforeIssue.state == State::ClockRolledBack, "license: a clock earlier than the server's issue time is caught");
+        const auto drift = License::evaluate (good, now - 5 * 60 * 1000, now, "test-user");
+        report (drift.state == State::Active, "license: 5 minutes of normal clock drift is fine");
+        const auto wrong = License::evaluate (good, now, now, "another-user");
+        report (wrong.state == State::WrongAccount && wrong.tier == 0, "license: another account's license grants nothing");
+        const auto lapsedInfo = License::verify (V::lapsed, V::modulusHex);
+        const auto lapsed = License::evaluate (lapsedInfo, V::iat + 4 * V::day, V::iat + 4 * V::day, "test-user");
+        report (lapsedInfo.valid && lapsed.state == State::Lapsed, "license: a subscription that ended (pro_until) stops on time, even offline");
+        const auto freeInfo = License::verify (V::free, V::modulusHex);
+        report (freeInfo.valid && License::evaluate (freeInfo, now, now, "test-user").tier == 0, "license: a Free license verifies and grants Free");
+        report (juce::String (LicensePublicKey::modulusHex).length() == 512, "license: the app has a 2048-bit public key built in");
+    }
+}
+
 int runSecondWaveSelfTests()
 {
     failures = 0;
     testEffects();
     testEngine();
     testWave3();
+    testLicense();
     return failures;
 }

@@ -135,6 +135,21 @@ Later, a payment webhook (for example, a Supabase Edge Function using the servic
 
 To test the account client without the real server: `"AMETHYST 2026.exe" --account-test <url> <anon-key>` runs sign-in, refresh, entitlement, sign-up and reset against whatever server you point it at.
 
+### Signed licenses (anti-tamper)
+
+Paid plans are checked with **signed licenses**. The `license` Edge Function reads the user's row in `entitlements` and returns a license ("this account, this plan, works offline until...") signed with a private key that only Supabase holds. The app checks the signature with the public key built into it (`Source/LicensePublicKey.h`). This means:
+- **Editing the saved account data doesn't work.** A changed plan, date or account breaks the signature, and the license is ignored.
+- **Offline for 14 days.** After that, AMETHYST asks to go online once. A subscription with an end date (`pro_until`) stops on time, even offline.
+- **Clock protection.** AMETHYST remembers the latest time it has seen (and the server's time). If the PC's clock is set back more than 10 minutes, paid features pause until the clock is fixed and the plan is re-checked. Normal clock drift is fine.
+
+**Setup (once):**
+1. The key pair is made by `node tools/make-license-keys.js`. It writes `config/license_private.pem` (private: git-ignored, never share it, and **keep a backup**) and the public key into the app. Running it again makes a new pair, so only do that if the private key leaks.
+2. Supabase dashboard > **Edge Functions** > Deploy a new function named `license` with the code in `supabase/functions/license/index.ts` (or `supabase functions deploy license`). Leave "Verify JWT" on.
+3. Edge Functions > **Secrets**: add `LICENSE_PRIVATE_KEY` with the whole contents of `config/license_private.pem`, including the BEGIN/END lines.
+4. Ship the new build (installer + update).
+
+Until the function is deployed, AMETHYST falls back to checking the `entitlements` table live. That fallback counts only while the app is open and is never saved, so a tampered cache can't use it, but there's no offline use either. Dev check: `"AMETHYST 2026.exe" --license-verify <token>` tells you whether a license verifies against the built-in key.
+
 ## AMETHYST TUNE (Ultra Pro)
 
 Real-time vocal pitch correction, available to **Ultra Pro** accounts. It shows an **ULTRA** badge in the plug-in list.

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "License.h"
 
 //==============================================================================
 // Minimal, synchronous Supabase Auth + REST client. Call from a background thread.
@@ -36,6 +37,10 @@ public:
     Session signUp (const juce::String& email, const juce::String& password) const;
     Session refresh (const juce::String& refreshToken) const;
     Entitlement fetchEntitlement (const juce::String& accessToken, const juce::String& userId) const;
+
+    // Signed license from the "license" Edge Function. notDeployed = the function isn't set up yet (404).
+    struct LicenseResult { bool ok = false, notDeployed = false, networkError = false; juce::String error, token; };
+    LicenseResult fetchLicense (const juce::String& accessToken) const;
     void signOut (const juce::String& accessToken) const;
     juce::String sendPasswordReset (const juce::String& email) const;   // empty = success
 
@@ -70,9 +75,16 @@ public:
     bool isConfigured() const { return api.isConfigured(); }
     bool isSignedIn() const   { return refreshToken.isNotEmpty(); }
     bool isBusy() const       { return busy > 0; }
-    bool isPro() const;
-    bool isUltra() const { return isPro() && ultra; }
-    int getTier() const  { return isUltra() ? 2 : (isPro() ? 1 : 0); }   // 0 Free, 1 Pro, 2 Ultra Pro
+    // The plan comes from the signed license (works offline until it expires, see License.h). While the
+    // license server isn't deployed yet, a live check of the entitlements table counts for this session only.
+    int getTier() const;                       // 0 Free, 1 Pro, 2 Ultra Pro
+    bool isPro() const   { return getTier() >= 1; }
+    bool isUltra() const { return getTier() >= 2; }
+    juce::String getLicenseProblem() const;    // why paid features are off right now ("" = fine)
+
+    // One line about the license for the Account window: 1 = signed license active, 0 = live check only, -1 = paused
+    struct LicenseSummary { int state = 0; juce::String text; };
+    LicenseSummary getLicenseSummary() const;
 
     juce::String getEmail() const  { return email; }
 
@@ -110,7 +122,12 @@ private:
 
     juce::String email, userId, accessToken, refreshToken, status;
     juce::Time accessExpiry;
-    bool pro = false, ultra = false;
+    bool pro = false, ultra = false;          // display only; access comes from the license
+    juce::String licenseToken;
+    License::Info license;
+    int liveLegacyTier = 0;                   // session only, never saved
+    mutable juce::int64 latestSeen = 0;       // latest time this PC has seen (clock-rollback check)
+    void applyLicense (const juce::String& token, const License::Info&);
     juce::String plan;
     juce::Time proUntil, lastVerified;
     int busy = 0;
