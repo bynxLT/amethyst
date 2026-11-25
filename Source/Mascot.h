@@ -11,6 +11,10 @@ namespace Mascot
     // true = every logo mark (toolbar, splash, welcome screen, windows, the window icon) shows her face
     inline bool& iconOn() { static bool on = false; return on; }
 
+    // "AMETHYST 2026" or "AMETHYST 2026 Anime Edition" while her icon is on
+    inline juce::String edition()  { return iconOn() ? "Anime Edition" : juce::String(); }
+    inline juce::String appTitle() { return iconOn() ? "AMETHYST 2026 Anime Edition" : "AMETHYST 2026"; }
+
     inline juce::Image face()  { return juce::ImageCache::getFromMemory (AmethystArt::mascot_face_png, AmethystArt::mascot_face_pngSize); }
     inline juce::Image icon()  { return juce::ImageCache::getFromMemory (AmethystArt::mascot_icon_png, AmethystArt::mascot_icon_pngSize); }
 

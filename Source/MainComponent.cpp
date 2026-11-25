@@ -212,7 +212,7 @@ MainComponent::MainComponent()
             openProjectFile (f);
             projectFile = saveAs;
             if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
-                w->setName (kAppTitle + " - " + (saveAs != juce::File() ? saveAs.getFileNameWithoutExtension() : juce::String ("Untitled")));
+                w->setName (Mascot::appTitle() + " - " + (saveAs != juce::File() ? saveAs.getFileNameWithoutExtension() : juce::String ("Untitled")));
         };
         host.report = [this] (const juce::String& title, const juce::String& text) { showTextReport (title, text); };
         studio = std::make_unique<Studio2026> (ctx, appProperties, std::move (host));
@@ -363,7 +363,7 @@ void MainComponent::paint (juce::Graphics& g)
             bg.drawText ("AMETHYST", word.removeFromTop (word.getHeight() / 2 + 4).withTrimmedTop (2), juce::Justification::bottomLeft);
             bg.setColour (Theme::accent);
             bg.setFont (juce::FontOptions (10.0f, juce::Font::bold));
-            bg.drawText ("2026  VOCAL STUDIO", word, juce::Justification::topLeft);
+            bg.drawText (Mascot::iconOn() ? "2026  ANIME EDITION" : "2026  VOCAL STUDIO", word, juce::Justification::topLeft);
         }
     }
     g.drawImageAt (backgroundCache, 0, 0);
@@ -1368,7 +1368,7 @@ void MainComponent::restoreAutosave (const juce::File& original)
     keep.deleteFile();
 
     if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
-        w->setName (kAppTitle + " - " + (original != juce::File() ? original.getFileNameWithoutExtension() : juce::String ("Untitled")) + " (recovered)");
+        w->setName (Mascot::appTitle() + " - " + (original != juce::File() ? original.getFileNameWithoutExtension() : juce::String ("Untitled")) + " (recovered)");
     if (result.failed())
         juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Restored with problems", result.getErrorMessage());
 }
@@ -1489,7 +1489,7 @@ void MainComponent::saveProject (bool forceChooser)
             if (studio != nullptr)
                 studio->toast ("Saved " + f.getFileNameWithoutExtension());
             if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
-                w->setName (kAppTitle + " - " + f.getFileNameWithoutExtension());
+                w->setName (Mascot::appTitle() + " - " + f.getFileNameWithoutExtension());
         }
     };
 
@@ -1886,7 +1886,7 @@ void MainComponent::startNewProject (const juce::StringArray& trackNames)
     rebuildTrackComponents();
 
     if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
-        w->setName (kAppTitle);
+        w->setName (Mascot::appTitle());
     repaint();
 }
 
@@ -1951,7 +1951,7 @@ void MainComponent::openProjectFile (const juce::File& file)
     rebuildTrackComponents();
 
     if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
-        w->setName (kAppTitle + " - " + file.getFileNameWithoutExtension());
+        w->setName (Mascot::appTitle() + " - " + file.getFileNameWithoutExtension());
 
     if (studio != nullptr) studio->sessionChanged();
     if (isFlp && result.wasOk())
@@ -2075,14 +2075,14 @@ void MainComponent::startTemplate (int kind, bool confirmed)
         }
         engine.setPlayThrough (*tracks[2], vocals);   // adlibs use the vocal chain
         if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
-            w->setName (kAppTitle + " - Vocal session");
+            w->setName (Mascot::appTitle() + " - Vocal session");
     }
     else
     {
         startNewProject ({ "Beat", "Drums", "Melody", "Bass" });
         if (tier >= 1) addFx (engine.getMaster(), "amethyst.master", "Balanced");
         if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
-            w->setName (kAppTitle + " - Mix a beat");
+            w->setName (Mascot::appTitle() + " - Mix a beat");
     }
     rebuildTrackComponents();
 }
@@ -2360,6 +2360,10 @@ void MainComponent::updateDiscord()
         const juce::String gem (juce::CharPointer_UTF8 (tier >= 2 ? "\xf0\x9f\x91\x91" : "\xf0\x9f\x92\x8e"));   // crown / gem
         a.details << "  " << gem << " " << a.plan;
     }
+    // her icon on: "Anime Edition" in the status line and the logo's hover text
+    a.edition = Mascot::edition();
+    if (a.edition.isNotEmpty())
+        a.state = a.state.isNotEmpty() ? a.edition + "  -  " + a.state : a.edition;
     discord->setActivity (a);
 }
 
@@ -2410,6 +2414,9 @@ void MainComponent::applyIconStyle (int style, bool save)
             c->repaint();
         }
     applyWindowIcon();
+    if (auto* w = findParentComponentOfClass<juce::DocumentWindow>())
+        w->setName (Mascot::appTitle() + w->getName().fromFirstOccurrenceOf (" - ", true, false));
+    updateDiscord();
     repaint();
 }
 
@@ -2701,6 +2708,8 @@ int MainComponent::runUiSelfTest (const juce::File& folder)
     {
         applyIconStyle (1, false);
         check (Mascot::iconOn() && Mascot::face().isValid() && Mascot::icon().isValid() && Mascot::figure().isValid(), "mascot art loads (face, icon, full figure)");
+        auto* win = findParentComponentOfClass<juce::DocumentWindow>();
+        check (win == nullptr || win->getName().startsWith ("AMETHYST 2026 Anime Edition"), "window title says Anime Edition (" + (win != nullptr ? win->getName() : juce::String ("no window")) + ")");
         mascotPeek.show ("Hi! You found me!");
         mascotPeek.jumpToUp();
         check (mascotPeek.isVisible() && mascotPeek.getWidth() > 0, "the angel peeks in from the corner");
@@ -2714,6 +2723,7 @@ int MainComponent::runUiSelfTest (const juce::File& folder)
         mascotPeek.setVisible (false);
         applyIconStyle (0, false);
         check (! Mascot::iconOn(), "switching back to the gem icon");
+        check (win == nullptr || ! win->getName().contains ("Anime"), "and the title goes back to AMETHYST 2026");
     }
     setMixerVisible (false);
     juce::Desktop::getInstance().getAnimator().cancelAllAnimations (true);

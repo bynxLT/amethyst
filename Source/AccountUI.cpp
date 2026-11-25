@@ -1,4 +1,5 @@
 #include "AccountUI.h"
+#include "Mascot.h"
 #include "LicenseCheck.h"
 #include "AvatarMedia.h"
 
@@ -271,7 +272,7 @@ void AccountPanel::paint (juce::Graphics& g)
     head.removeFromLeft (10);
     g.setColour (Theme::text);
     g.setFont (juce::FontOptions (21.0f, juce::Font::bold));
-    g.drawText ("AMETHYST 2026", head.removeFromTop (28), juce::Justification::bottomLeft);
+    g.drawText (Mascot::appTitle(), head.removeFromTop (28), juce::Justification::bottomLeft);
     g.setColour (Theme::accent);
     g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
     g.drawText ("ACCOUNT", head, juce::Justification::topLeft);

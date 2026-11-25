@@ -156,7 +156,10 @@ void DiscordPresence::run()
             auto assets = new juce::DynamicObject();
             assets->setProperty ("large_image", "amethyst");
             // hovering the big logo shows the plan too, even without uploaded badge art
-            assets->setProperty ("large_text", a.plan.isNotEmpty() ? "AMETHYST 2026 " + a.plan : juce::String ("AMETHYST 2026"));
+            juce::String title ("AMETHYST 2026");
+            if (a.edition.isNotEmpty()) title << " " << a.edition;
+            if (a.plan.isNotEmpty())    title << " " << a.plan;
+            assets->setProperty ("large_text", title);
             if (a.smallImage.isNotEmpty())
             {
                 assets->setProperty ("small_image", a.smallImage);

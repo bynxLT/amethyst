@@ -1,4 +1,5 @@
 #include "WelcomeScreen.h"
+#include "Mascot.h"
 #include "GlassLookAndFeel.h"
 
 namespace
@@ -156,7 +157,7 @@ void WelcomeScreen::paint (juce::Graphics& g)
     header.removeFromLeft (10);
     g.setColour (Theme::text);
     g.setFont (juce::FontOptions (26.0f, juce::Font::bold));
-    g.drawText ("Welcome to AMETHYST 2026", header.removeFromTop (34), juce::Justification::bottomLeft);
+    g.drawText ("Welcome to " + Mascot::appTitle(), header.removeFromTop (34), juce::Justification::bottomLeft);
     g.setColour (Theme::textDim);
     g.setFont (juce::FontOptions (13.0f));
     g.drawText ("Pick up where you left off, or start something new.", header, juce::Justification::topLeft);

@@ -16,7 +16,8 @@ public:
         juce::String details, state;           // the two text lines
         juce::String smallImage, smallText;    // e.g. "ultra" / "Ultra Pro"
         juce::String plan;                     // "Ultra Pro" / "Pro" - shown in the text (empty = don't show)
-        bool operator== (const Activity& o) const { return details == o.details && state == o.state && smallImage == o.smallImage && smallText == o.smallText && plan == o.plan; }
+        juce::String edition;                  // "Anime Edition" (empty = the normal app)
+        bool operator== (const Activity& o) const { return details == o.details && state == o.state && smallImage == o.smallImage && smallText == o.smallText && plan == o.plan && edition == o.edition; }
     };
 
     void setApplicationId (const juce::String& id);

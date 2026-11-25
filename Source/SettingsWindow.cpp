@@ -1,4 +1,5 @@
 #include "SettingsWindow.h"
+#include "Mascot.h"
 #include "Exporter.h"
 
 namespace SettingsWindow
@@ -374,7 +375,7 @@ namespace
 
             g.setColour (Theme::textDim.withAlpha (0.45f));
             g.setFont (juce::FontOptions (11.5f));
-            g.drawText ("AMETHYST 2026  v" + juce::String (ProjectInfo::versionString), 22, getHeight() - 34, getWidth() - 30, 18, juce::Justification::centredLeft);
+            g.drawText ((Mascot::iconOn() ? "Anime Edition  v" : "AMETHYST 2026  v") + juce::String (ProjectInfo::versionString), 22, getHeight() - 34, getWidth() - 30, 18, juce::Justification::centredLeft);
         }
 
         void mouseMove (const juce::MouseEvent& e) override { setHover (indexAt (e.getPosition())); }

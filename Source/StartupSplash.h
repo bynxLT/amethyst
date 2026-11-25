@@ -134,6 +134,12 @@ public:
             g.fillRoundedRectangle (r, r.getHeight() * 0.5f);
             g.setColour (juce::Colours::white.withAlpha (pill * alpha));
             g.drawText ("2026", r, juce::Justification::centred, false);
+            if (Mascot::iconOn())
+            {
+                g.setColour (Theme::accent2.withAlpha (pill * alpha));
+                g.setFont (juce::FontOptions (fontH * 0.3f, juce::Font::bold));
+                g.drawText ("ANIME EDITION", r.withSizeKeepingCentre (fontH * 5.0f, fontH * 0.5f).translated (0.0f, fontH * 0.55f), juce::Justification::centred, false);
+            }
         }
 
         // loading line
