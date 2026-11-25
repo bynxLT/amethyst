@@ -140,6 +140,27 @@ namespace ProjectIO
         root.setAttribute ("version", 2);
         root.setAttribute ("bpm", engine.bpm.load());
         root.setAttribute ("metronome", engine.metronomeOn.load());
+        {
+            const double srNotes = juce::jmax (1.0, engine.getSampleRate());
+            if (engine.hasLoopRegion())
+            {
+                root.setAttribute ("loopStartSeconds", (double) engine.loopStart.load() / srNotes);
+                root.setAttribute ("loopEndSeconds", (double) engine.loopEnd.load() / srNotes);
+                root.setAttribute ("loopOn", engine.loopEnabled.load());
+            }
+            if (! engine.markers.empty())
+            {
+                auto* mk = root.createNewChildElement ("MARKERS");
+                for (auto& m : engine.markers)
+                {
+                    auto* x = mk->createNewChildElement ("MARKER");
+                    x->setAttribute ("t", m.seconds);
+                    x->setAttribute ("name", m.name);
+                }
+            }
+            if (engine.lyrics.isNotEmpty())
+                root.createNewChildElement ("LYRICS")->addTextElement (engine.lyrics);
+        }
 
         auto& master = engine.getMaster();
         auto* mx = root.createNewChildElement ("MASTER");
@@ -154,14 +175,37 @@ namespace ProjectIO
             tx->setAttribute ("name", t->name);
             tx->setAttribute ("inputChannel", t->inputChannel.load());
             tx->setAttribute ("stereoInput", t->stereoInput.load());
+            tx->setAttribute ("inputGainDb", (double) t->inputGainDb.load());
             tx->setAttribute ("mute", t->mute.load());
             tx->setAttribute ("solo", t->solo.load());
             tx->setAttribute ("monitor", t->monitor.load());
             tx->setAttribute ("layerTakes", t->layerTakes.load());
             tx->setAttribute ("takesToFreeTrack", t->takesToFreeTrack);
+            if (! t->colour.isTransparent())
+                tx->setAttribute ("colour", t->colour.toString());
+            if (t->lowCutHz.load() > 1.0f)
+                tx->setAttribute ("lowCutHz", (double) t->lowCutHz.load());
+            if (t->phaseInvert.load())
+                tx->setAttribute ("phaseInvert", true);
             if (t->playThrough != nullptr)
                 tx->setAttribute ("playThroughIndex", engine.getTracks().indexOf (t->playThrough));
             tx->addChildElement (ChannelPresets::toXml (*t, t->name).release());
+
+            if (auto* a = t->automation.get())
+            {
+                auto* ax = tx->createNewChildElement ("AUTOMATION");
+                ax->setAttribute ("kind", a->kind == Automation::Kind::Volume ? "volume" : a->kind == Automation::Kind::Pan ? "pan" : "param");
+                // target: -1 = master, -2 = deleted, else track index
+                ax->setAttribute ("target", a->target == nullptr ? -2 : a->target == &master ? -1 : engine.getTracks().indexOf (a->target));
+                ax->setAttribute ("slot", a->slot);
+                ax->setAttribute ("param", a->param);
+                for (auto& p : a->points)
+                {
+                    auto* px = ax->createNewChildElement ("P");
+                    px->setAttribute ("t", p.seconds);
+                    px->setAttribute ("v", (double) p.value);
+                }
+            }
 
             for (auto& clip : t->clips)
             {
@@ -199,6 +243,22 @@ namespace ProjectIO
 
         engine.bpm = root->getDoubleAttribute ("bpm", 120.0);
         engine.metronomeOn = root->getBoolAttribute ("metronome", false);
+        engine.clearSessionNotes();
+        {
+            const double srNotes = juce::jmax (1.0, engine.getSampleRate());
+            if (root->hasAttribute ("loopStartSeconds"))
+            {
+                engine.loopStart = (juce::int64) std::llround (root->getDoubleAttribute ("loopStartSeconds") * srNotes);
+                engine.loopEnd = (juce::int64) std::llround (root->getDoubleAttribute ("loopEndSeconds") * srNotes);
+                engine.loopEnabled = root->getBoolAttribute ("loopOn", false);
+            }
+            if (auto* mk = root->getChildByName ("MARKERS"))
+                for (auto* x : mk->getChildWithTagNameIterator ("MARKER"))
+                    engine.markers.push_back ({ x->getDoubleAttribute ("t"), x->getStringAttribute ("name") });
+            std::sort (engine.markers.begin(), engine.markers.end(), [] (auto& a, auto& b) { return a.seconds < b.seconds; });
+            if (auto* ly = root->getChildByName ("LYRICS"))
+                engine.lyrics = ly->getAllSubText();
+        }
 
         juce::StringArray problems;
         auto& master = engine.getMaster();
@@ -223,16 +283,22 @@ namespace ProjectIO
         const double sr = engine.getSampleRate();
 
         std::vector<std::pair<Track*, int>> routes; // applied once every track exists
+        std::vector<std::pair<Track*, int>> automationTargets;
         for (auto* tx : root->getChildWithTagNameIterator ("TRACK"))
         {
             auto* t = engine.addTrack (tx->getStringAttribute ("name", "Track"));
             t->inputChannel = tx->getIntAttribute ("inputChannel", 0);
             t->stereoInput = tx->getBoolAttribute ("stereoInput", false);
+            t->inputGainDb = (float) juce::jlimit (-12.0, 24.0, tx->getDoubleAttribute ("inputGainDb", 0.0));
             t->mute = tx->getBoolAttribute ("mute", false);
             t->solo = tx->getBoolAttribute ("solo", false);
             t->monitor = tx->getBoolAttribute ("monitor", false);
             t->layerTakes = tx->getBoolAttribute ("layerTakes", false); // older projects used "newest on top"
             t->takesToFreeTrack = tx->getBoolAttribute ("takesToFreeTrack", true);
+            if (tx->hasAttribute ("colour"))
+                t->colour = juce::Colour::fromString (tx->getStringAttribute ("colour"));
+            t->lowCutHz = (float) juce::jlimit (0.0, 1000.0, tx->getDoubleAttribute ("lowCutHz", 0.0));
+            t->phaseInvert = tx->getBoolAttribute ("phaseInvert", false);
             if (tx->hasAttribute ("playThroughIndex"))
                 routes.emplace_back (t, tx->getIntAttribute ("playThroughIndex"));
 
@@ -241,6 +307,21 @@ namespace ProjectIO
                 auto r = ChannelPresets::applyXml (engine, *t, *preset);
                 if (r.failed())
                     problems.add (t->name + ": " + r.getErrorMessage());
+            }
+
+            if (auto* ax = tx->getChildByName ("AUTOMATION"))
+            {
+                auto a = std::make_unique<Automation>();
+                const auto kind = ax->getStringAttribute ("kind");
+                a->kind = kind == "volume" ? Automation::Kind::Volume : kind == "pan" ? Automation::Kind::Pan : Automation::Kind::Param;
+                a->slot = ax->getIntAttribute ("slot", -1);
+                a->param = ax->getIntAttribute ("param", -1);
+                for (auto* px : ax->getChildWithTagNameIterator ("P"))
+                    a->points.push_back ({ px->getDoubleAttribute ("t"), (float) juce::jlimit (0.0, 1.0, px->getDoubleAttribute ("v")) });
+                std::sort (a->points.begin(), a->points.end(), [] (auto& x, auto& y) { return x.seconds < y.seconds; });
+                automationTargets.emplace_back (t, ax->getIntAttribute ("target", -2));
+                const juce::ScopedLock sl (engine.getLock());
+                t->automation = std::move (a);
             }
 
             for (auto* cx : tx->getChildWithTagNameIterator ("CLIP"))
@@ -270,6 +351,13 @@ namespace ProjectIO
         for (auto& [lane, index] : routes)
             if (auto* channel = engine.getTracks()[index])
                 engine.setPlayThrough (*lane, channel);
+
+        for (auto& [lane, index] : automationTargets)
+        {
+            Track* target = index == -1 ? &master : engine.getTracks()[index];
+            const juce::ScopedLock sl (engine.getLock());
+            lane->automation->target = target != nullptr && ! target->isAutomation() ? target : nullptr;
+        }
 
         if (problems.isEmpty())
             return juce::Result::ok();

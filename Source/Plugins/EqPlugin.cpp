@@ -30,6 +30,32 @@ namespace
     }
 
     bool usesGain (int type) { return type == LowShelf || type == Peak || type == HighShelf; }
+    bool isCut (int type) { return type == LowCut || type == HighCut; }
+
+    const juce::StringArray kSlopes { "12 dB", "24 dB", "48 dB" };
+    constexpr int kMaxStages = 4;
+    int stagesFor (int type, int slope) { return isCut (type) ? (slope == 2 ? 4 : slope == 1 ? 2 : 1) : 1; }
+
+    // Butterworth section Qs for 2nd / 4th / 8th order; the user's Q scales the last (most resonant) one.
+    float stageQ (int stages, int stage, float userQ)
+    {
+        static const float q2[] = { 0.7071f }, q4[] = { 0.5412f, 1.3066f }, q8[] = { 0.5098f, 0.6013f, 0.9000f, 2.5629f };
+        if (stages == 1) return userQ;
+        const float* t = stages == 2 ? q4 : q8;
+        juce::ignoreUnused (q2);
+        const float base = t[stage];
+        return stage == stages - 1 ? base * (userQ / 0.7071f) : base;
+    }
+
+    // All the biquads a band needs (1 for most types, up to 4 for steep cuts).
+    std::vector<Coeffs::Ptr> makeBandCoeffs (int type, int slope, double sr, float f, float gainDb, float q)
+    {
+        const int n = stagesFor (type, slope);
+        std::vector<Coeffs::Ptr> out;
+        for (int i = 0; i < n; ++i)
+            out.push_back (makeCoeffs (type, sr, f, gainDb, n == 1 ? q : stageQ (n, i, q)));
+        return out;
+    }
 
     //==========================================================================
     class EqPlugin : public AmethystPlugin
@@ -40,7 +66,9 @@ namespace
             for (int b = 0; b < kBands; ++b)
                 sections.push_back ({ "Band " + juce::String (b + 1), { bandId (b, "on"), bandId (b, "type"), bandId (b, "freq"), bandId (b, "gain"), bandId (b, "q") },
                                       b < 4 ? 0 : 1, 40 });
-            sections.push_back ({ "Output", { "out" }, 1, 44 });
+            sections.push_back ({ "Band 1 cut slope", { bandId (0, "slope") }, 2, 44 });
+            sections.push_back ({ "Band 7 cut slope", { bandId (kBands - 1, "slope") }, 2, 44 });
+            sections.push_back ({ "Output", { "out" }, 2, 44 });
 
             presets = {
                 { "Default", {} },
@@ -70,6 +98,7 @@ namespace
                 l.add (AmParams::num (bandId (b, "freq"), "Freq", 20.0f, 20000.0f, freqs[b], "Hz", 0, 1000.0f));
                 l.add (AmParams::num (bandId (b, "gain"), "Gain", -18.0f, 18.0f, 0.0f, "dB", 1));
                 l.add (AmParams::num (bandId (b, "q"), "Q", 0.1f, 18.0f, (types[b] == Peak ? 1.0f : 0.7f), {}, 2, 1.2f));
+                l.add (AmParams::choice (bandId (b, "slope"), "Band " + juce::String (b + 1) + " slope", kSlopes, 0));
             }
             l.add (AmParams::num ("out", "Gain", -18.0f, 18.0f, 0.0f, "dB", 1));
             return l;
@@ -81,12 +110,16 @@ namespace
             for (auto& b : bands)
             {
                 b.lastType = -1;
-                for (auto& f : b.filters)
-                    f.reset();
+                b.lastSlope = -1;
+                for (auto& ch : b.filters)
+                    for (auto& f : ch)
+                        f.reset();
             }
+            for (auto& f : soloFilters) f.reset();
+            soloF = soloQ = -1.0f;
         }
 
-        void processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
+        void process (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
         {
             juce::ScopedNoDenormals noDenormals;
             const int n = buffer.getNumSamples();
@@ -95,6 +128,19 @@ namespace
             for (int b = 0; b < kBands; ++b)
                 updateBand (b);
 
+            // input spectrum (shown faintly behind the output)
+            {
+                int w = preWrite.load();
+                for (int i = 0; i < n; ++i)
+                {
+                    float v = buffer.getSample (0, i);
+                    if (nCh > 1) v = 0.5f * (v + buffer.getSample (1, i));
+                    preScope[(size_t) w] = v;
+                    w = (w + 1) & (kScopeSize - 1);
+                }
+                preWrite.store (w);
+            }
+
             for (int c = 0; c < nCh; ++c)
             {
                 auto* d = buffer.getWritePointer (c);
@@ -102,13 +148,35 @@ namespace
                 {
                     if (! band.active)
                         continue;
-                    auto& f = band.filters[(size_t) c];
-                    for (int i = 0; i < n; ++i)
-                        d[i] = f.processSample (d[i]);
+                    for (int st = 0; st < band.stages; ++st)
+                    {
+                        auto& f = band.filters[(size_t) c][(size_t) st];
+                        for (int i = 0; i < n; ++i)
+                            d[i] = f.processSample (d[i]);
+                    }
                 }
             }
 
             buffer.applyGain (juce::Decibels::decibelsToGain (get ("out")));
+
+            // band solo: hear only the region around that band
+            const int solo = soloBand.load();
+            if (solo >= 0 && solo < kBands)
+            {
+                const float sf = params (bandId (solo, "freq")), sq = juce::jmax (0.3f, params (bandId (solo, "q")));
+                if (sf != soloF || sq != soloQ)
+                {
+                    soloF = sf; soloQ = sq;
+                    auto bp = Coeffs::makeBandPass (sampleRate, juce::jlimit (20.0f, (float) (sampleRate * 0.45), sf), sq);
+                    for (auto& f : soloFilters) f.coefficients = bp;
+                }
+                for (int c = 0; c < nCh; ++c)
+                {
+                    auto* d = buffer.getWritePointer (c);
+                    for (int i = 0; i < n; ++i)
+                        d[i] = soloFilters[(size_t) c].processSample (d[i]) * 1.5f;
+                }
+            }
 
             // feed the analyzer
             int w = scopeWrite.load();
@@ -127,18 +195,21 @@ namespace
         int getMinimumEditorWidth() const override { return 760; }
 
         static constexpr int kScopeSize = 4096;
-        std::array<float, kScopeSize> scope {};
-        std::atomic<int> scopeWrite { 0 };
+        std::array<float, kScopeSize> scope {}, preScope {};
+        std::atomic<int> scopeWrite { 0 }, preWrite { 0 };
+        std::atomic<int> soloBand { -1 };   // band being listened to, -1 = none (not saved)
         double getRate() const { return sampleRate; }
 
     private:
         struct Band
         {
-            std::array<juce::dsp::IIR::Filter<float>, 2> filters;
-            int lastType = -1;
+            std::array<std::array<juce::dsp::IIR::Filter<float>, kMaxStages>, 2> filters;
+            int lastType = -1, lastSlope = -1, stages = 1;
             float lastF = 0, lastG = 0, lastQ = 0;
             bool active = false;
         };
+        std::array<juce::dsp::IIR::Filter<float>, 2> soloFilters;
+        float soloF = -1.0f, soloQ = -1.0f;
 
         void updateBand (int b)
         {
@@ -146,20 +217,24 @@ namespace
             const bool on = params (bandId (b, "on")) > 0.5f;
             const int type = (int) std::lround (params (bandId (b, "type")));
             const float f = params (bandId (b, "freq")), g = params (bandId (b, "gain")), q = params (bandId (b, "q"));
+            const int slope = (int) std::lround (params (bandId (b, "slope")));
 
             band.active = on && ! (usesGain (type) && std::abs (g) < 0.05f);
             if (! band.active)
                 return;
 
-            if (type != band.lastType || f != band.lastF || g != band.lastG || q != band.lastQ)
+            if (type != band.lastType || slope != band.lastSlope || f != band.lastF || g != band.lastG || q != band.lastQ)
             {
-                auto c = makeCoeffs (type, sampleRate, f, g, q);
-                for (auto& filt : band.filters)
-                    filt.coefficients = c;
-                if (type != band.lastType)
-                    for (auto& filt : band.filters)
-                        filt.reset();
-                band.lastType = type; band.lastF = f; band.lastG = g; band.lastQ = q;
+                const auto cs = makeBandCoeffs (type, slope, sampleRate, f, g, q);
+                const bool reshaped = type != band.lastType || slope != band.lastSlope;
+                band.stages = (int) cs.size();
+                for (auto& ch : band.filters)
+                    for (int st = 0; st < band.stages; ++st)
+                    {
+                        ch[(size_t) st].coefficients = cs[(size_t) st];
+                        if (reshaped) ch[(size_t) st].reset();
+                    }
+                band.lastType = type; band.lastSlope = slope; band.lastF = f; band.lastG = g; band.lastQ = q;
             }
         }
 
@@ -176,6 +251,7 @@ namespace
         explicit EqDisplay (EqPlugin& p) : plugin (p)
         {
             spectrum.fill (-100.0f);
+            preSpectrum.fill (-100.0f);
             startTimerHz (30);
         }
 
@@ -205,6 +281,24 @@ namespace
                 g.drawText ((db > 0 ? "+" : "") + juce::String ((int) db), (int) plot.getRight() - 26, (int) y - 12, 24, 12, juce::Justification::centredRight);
             }
 
+            // input spectrum: a faint line behind the output
+            {
+                juce::Path pre;
+                const double srate = plugin.getRate();
+                for (int x = 0; x <= (int) plot.getWidth(); x += 2)
+                {
+                    const float f = xToFreq (plot.getX() + (float) x);
+                    const float bin = (float) (f * kFft / srate);
+                    const int b0 = juce::jlimit (1, kFft / 2 - 2, (int) bin);
+                    const float frac = bin - (float) b0;
+                    const float db = preSpectrum[(size_t) b0] + (preSpectrum[(size_t) b0 + 1] - preSpectrum[(size_t) b0]) * frac;
+                    const float y = plot.getBottom() - plot.getHeight() * juce::jlimit (0.0f, 1.0f, (db + 90.0f) / 90.0f);
+                    if (x == 0) pre.startNewSubPath (plot.getX(), y); else pre.lineTo (plot.getX() + (float) x, y);
+                }
+                g.setColour (Theme::textDim.withAlpha (0.35f));
+                g.strokePath (pre, juce::PathStrokeType (1.0f));
+            }
+
             // spectrum
             {
                 juce::Path s;
@@ -230,9 +324,11 @@ namespace
             // response curve
             juce::Path curve;
             const double sr = plugin.getRate();
-            std::array<Coeffs::Ptr, kBands> coeffs;
+            std::vector<Coeffs::Ptr> coeffs;
             for (int b = 0; b < kBands; ++b)
-                coeffs[(size_t) b] = bandActive (b) ? makeCoeffs (bandType (b), sr, param (b, "freq"), param (b, "gain"), param (b, "q")) : nullptr;
+                if (bandActive (b))
+                    for (auto& c : makeBandCoeffs (bandType (b), (int) std::lround (param (b, "slope")), sr, param (b, "freq"), param (b, "gain"), param (b, "q")))
+                        coeffs.push_back (c);
 
             const float outDb = plugin.apvts.getRawParameterValue ("out")->load();
             for (int x = 0; x <= (int) plot.getWidth(); ++x)
@@ -279,10 +375,25 @@ namespace
                 g.drawText (juce::String (b + 1), juce::Rectangle<float> (20.0f, 20.0f).withCentre (pos).toNearestInt(), juce::Justification::centred);
             }
 
+            const int solo = plugin.soloBand.load();
+            if (solo >= 0)
+            {
+                const auto pos = nodePos (solo);
+                g.setColour (bandColours[solo].withAlpha (0.18f));
+                const float q = juce::jmax (0.3f, param (solo, "q"));
+                const float half = juce::jlimit (12.0f, plot.getWidth() * 0.4f, plot.getWidth() * 0.12f / q);
+                g.fillRect (juce::Rectangle<float> (pos.x - half, plot.getY(), half * 2.0f, plot.getHeight()));
+                g.setColour (Theme::text);
+                g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+                g.drawText ("LISTENING TO BAND " + juce::String (solo + 1) + "  (right-click it to stop)", plot.toNearestInt().removeFromBottom (18).withTrimmedLeft (6),
+                            juce::Justification::centredLeft);
+            }
+
             if (hover >= 0 || dragging >= 0)
             {
                 const int b = dragging >= 0 ? dragging : hover;
-                const auto txt = kTypes[bandType (b)] + "   " + formatFreq (param (b, "freq"))
+                const auto txt = kTypes[bandType (b)] + (isCut (bandType (b)) ? " " + kSlopes[(int) std::lround (param (b, "slope"))] : juce::String())
+                                 + "   " + formatFreq (param (b, "freq"))
                                  + (usesGain (bandType (b)) ? "   " + juce::String (param (b, "gain"), 1) + " dB" : juce::String())
                                  + "   Q " + juce::String (param (b, "q"), 2);
                 g.setColour (Theme::text);
@@ -293,7 +404,7 @@ namespace
             {
                 g.setColour (Theme::textDim.withAlpha (0.6f));
                 g.setFont (juce::FontOptions (11.0f));
-                g.drawText ("Drag a node  -  scroll for Q  -  double-click to flatten  -  right-click for filter type",
+                g.drawText ("Drag a node  -  scroll for Q  -  Alt-drag to listen  -  double-click to flatten  -  right-click for more",
                             plot.toNearestInt().removeFromTop (18).withTrimmedLeft (6), juce::Justification::centredLeft);
             }
         }
@@ -318,18 +429,32 @@ namespace
                 m.addSectionHeader ("Band " + juce::String (b + 1));
                 for (int t = 0; t < kTypes.size(); ++t)
                     m.addItem (1 + t, kTypes[t], true, bandType (b) == t);
+                if (isCut (bandType (b)))
+                {
+                    m.addSectionHeader ("Slope");
+                    for (int sl = 0; sl < kSlopes.size(); ++sl)
+                        m.addItem (200 + sl, kSlopes[sl] + " / octave", true, (int) std::lround (param (b, "slope")) == sl);
+                }
                 m.addSeparator();
                 m.addItem (100, "Enabled", true, param (b, "on") > 0.5f);
+                m.addItem (101, "Listen to this band (solo)", true, plugin.soloBand.load() == b);
                 juce::Component::SafePointer<EqDisplay> safe (this);
                 m.showMenuAsync (juce::PopupMenu::Options(), [safe, b] (int r)
                 {
                     if (safe == nullptr || r == 0) return;
-                    if (r == 100) safe->plugin.setParam (bandId (b, "on"), safe->param (b, "on") > 0.5f ? 0.0f : 1.0f);
-                    else          safe->plugin.setParam (bandId (b, "type"), (float) (r - 1));
+                    if (r == 100)      safe->plugin.setParam (bandId (b, "on"), safe->param (b, "on") > 0.5f ? 0.0f : 1.0f);
+                    else if (r == 101) safe->plugin.soloBand = safe->plugin.soloBand.load() == b ? -1 : b;
+                    else if (r >= 200) safe->plugin.setParam (bandId (b, "slope"), (float) (r - 200));
+                    else               safe->plugin.setParam (bandId (b, "type"), (float) (r - 1));
                 });
                 return;
             }
 
+            if (e.mods.isAltDown())
+            {
+                plugin.soloBand = b;   // listen while dragging
+                altSolo = true;
+            }
             dragging = b;
             if (param (b, "on") < 0.5f)
                 plugin.setParam (bandId (b, "on"), 1.0f);
@@ -354,6 +479,7 @@ namespace
 
         void mouseUp (const juce::MouseEvent&) override
         {
+            if (altSolo) { plugin.soloBand = -1; altSolo = false; }
             if (dragging >= 0)
                 for (auto* id : { "freq", "gain" })
                     if (auto* p = plugin.apvts.getParameter (bandId (dragging, id)))
@@ -391,6 +517,18 @@ namespace
             {
                 const float db = juce::Decibels::gainToDecibels (fftData[(size_t) i] / (kFft * 0.25f), -100.0f);
                 spectrum[(size_t) i] = db > spectrum[(size_t) i] ? db : spectrum[(size_t) i] * 0.85f + db * 0.15f;
+            }
+
+            const int pw = plugin.preWrite.load();
+            for (int i = 0; i < kFft; ++i)
+                fftData[(size_t) i] = plugin.preScope[(size_t) ((pw - kFft + i + EqPlugin::kScopeSize) & (EqPlugin::kScopeSize - 1))];
+            std::fill (fftData.begin() + kFft, fftData.end(), 0.0f);
+            window.multiplyWithWindowingTable (fftData.data(), (size_t) kFft);
+            fft.performFrequencyOnlyForwardTransform (fftData.data());
+            for (int i = 0; i < kFft / 2; ++i)
+            {
+                const float db = juce::Decibels::gainToDecibels (fftData[(size_t) i] / (kFft * 0.25f), -100.0f);
+                preSpectrum[(size_t) i] = db > preSpectrum[(size_t) i] ? db : preSpectrum[(size_t) i] * 0.85f + db * 0.15f;
             }
             repaint();
         }
@@ -431,7 +569,8 @@ namespace
         juce::dsp::FFT fft { kFftOrder };
         juce::dsp::WindowingFunction<float> window { (size_t) kFft, juce::dsp::WindowingFunction<float>::hann };
         std::array<float, kFft * 2> fftData {};
-        std::array<float, kFft / 2> spectrum {};
+        std::array<float, kFft / 2> spectrum {}, preSpectrum {};
+        bool altSolo = false;
     };
 
     std::unique_ptr<juce::Component> EqPlugin::createVisual() { return std::make_unique<EqDisplay> (*this); }

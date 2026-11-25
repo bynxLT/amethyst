@@ -1,4 +1,5 @@
 #include "Exporter.h"
+#include "Loudness.h"
 
 bool amethystCanEncode (int formatId);
 std::string amethystEncodeCompressed (const char* utf8Path, const float* interleaved, long long frames,
@@ -148,6 +149,20 @@ namespace Exporter
                     return;
                 }
 
+                if (const double target = loudnessTarget(); target < 0.0)
+                {
+                    setStatusMessage ("Matching loudness to " + juce::String (target, 0) + " LUFS...");
+                    const double gain = Loudness::normalise (mix, engine.getSampleRate(), target, -1.0f);
+                    const auto after = Loudness::analyse (mix, engine.getSampleRate());
+                    loudnessNote = "Loudness " + juce::String (after.integrated, 1) + " LUFS, true peak " + juce::String (after.truePeakDb, 1)
+                                   + " dBTP (gain " + (gain >= 0 ? "+" : "") + juce::String (gain, 1) + " dB)";
+                }
+                else
+                {
+                    const auto m = Loudness::analyse (mix, engine.getSampleRate());
+                    loudnessNote = "Loudness " + juce::String (m.integrated, 1) + " LUFS, true peak " + juce::String (m.truePeakDb, 1) + " dBTP";
+                }
+
                 setStatusMessage ("Saving " + displayName (format) + "...");
                 setProgress (0.9);
                 result = write (mix, engine.getSampleRate(), format, file);
@@ -169,7 +184,7 @@ namespace Exporter
                 {
                     const auto f = file;
                     juce::AlertWindow::showOkCancelBox (juce::MessageBoxIconType::InfoIcon, "Export finished",
-                                                        "Saved " + juce::String (seconds, 1) + " seconds to\n" + file.getFullPathName(),
+                                                        "Saved " + juce::String (seconds, 1) + " seconds to\n" + file.getFullPathName() + "\n\n" + loudnessNote,
                                                         "Show file", "Close", nullptr,
                                                         juce::ModalCallbackFunction::create ([f] (int r) { if (r == 1) f.revealToUser(); }));
                 }
@@ -190,8 +205,11 @@ namespace Exporter
             std::function<void (bool)> onDone;
             juce::Result result { juce::Result::ok() };
             double seconds = 0.0;
+            juce::String loudnessNote;
         };
     }
+
+    double& loudnessTarget() { static double t = 0.0; return t; }
 
     void exportSong (AudioEngine& engine, Format format, const juce::File& file, juce::Component* centreAround, std::function<void (bool)> onDone)
     {

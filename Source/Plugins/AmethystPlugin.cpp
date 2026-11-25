@@ -145,6 +145,23 @@ void AmethystPlugin::getStateInformation (juce::MemoryBlock& dest)
         copyXmlToBinary (*xml, dest);
 }
 
+void AmethystPlugin::selectAB (int slot)
+{
+    slot = juce::jlimit (0, 1, slot);
+    if (slot == abSlot)
+        return;
+    getStateInformation (abStates[(size_t) abSlot]);
+    if (abStates[(size_t) slot].isEmpty())
+        abStates[(size_t) slot] = abStates[(size_t) abSlot];   // first visit: start from the same settings
+    abSlot = slot;
+    setStateInformation (abStates[(size_t) slot].getData(), (int) abStates[(size_t) slot].getSize());
+}
+
+void AmethystPlugin::copyCurrentToOtherAB()
+{
+    getStateInformation (abStates[(size_t) (1 - abSlot)]);
+}
+
 void AmethystPlugin::setStateInformation (const void* data, int sizeInBytes)
 {
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
@@ -235,7 +252,7 @@ namespace
         {
             int w = 0;
             for (auto& c : p.choices)
-                w += juce::jmax (34, 12 + 7 * c.length()) + 3;
+                w += juce::jmax (34, 18 + 8 * c.length()) + 3;
             return w;
         }
 
@@ -250,6 +267,23 @@ namespace
     public:
         explicit AmethystEditor (AmethystPlugin& p) : juce::AudioProcessorEditor (p), plugin (p)
         {
+            aBtn.onClick = [this] { plugin.selectAB (0); refreshAB(); };
+            bBtn.onClick = [this] { plugin.selectAB (1); refreshAB(); };
+            copyBtn.onClick = [this] { plugin.copyCurrentToOtherAB(); };
+            aBtn.setTooltip ("Settings A");
+            bBtn.setTooltip ("Settings B - switch to compare two settings");
+            copyBtn.setTooltip ("Copy these settings to the other slot");
+            for (auto* b : { &aBtn, &bBtn })
+            {
+                b->setClickingTogglesState (false);
+                b->setColour (juce::TextButton::buttonOnColourId, Theme::accent.withAlpha (0.55f));
+            }
+            for (auto* b : { &aBtn, &bBtn, &copyBtn })
+            {
+                b->setWantsKeyboardFocus (false);
+                addAndMakeVisible (b);
+            }
+            refreshAB();
             prevBtn.onClick = [this] { step (-1); };
             nextBtn.onClick = [this] { step (1); };
             presetBtn.onClick = [this] { showPresetMenu(); };
@@ -268,7 +302,7 @@ namespace
 
             buildSections();
             computeSize();
-            startTimerHz (15);
+            startTimerHz (30);
             timerCallback();
         }
 
@@ -299,7 +333,28 @@ namespace
                 }
             }
             g.drawImageAt (bgCache, 0, 0);
+
+            // IN / OUT level meters
+            auto m = meterArea.toFloat();
+            const float barW = (m.getWidth() - 4.0f) / 2.0f;
+            int idx = 0;
+            for (float level : { inShown, outShown })
+            {
+                auto bar = m.removeFromLeft (barW);
+                m.removeFromLeft (4.0f);
+                g.setColour (juce::Colours::black.withAlpha (0.35f));
+                g.fillRoundedRectangle (bar, 2.0f);
+                const float db = juce::Decibels::gainToDecibels (level, -60.0f);
+                const float frac = juce::jlimit (0.0f, 1.0f, (db + 60.0f) / 60.0f);
+                auto lit = bar.withTrimmedTop (bar.getHeight() * (1.0f - frac));
+                g.setGradientFill (juce::ColourGradient (level > 0.98f ? Theme::record : Theme::accent2, lit.getX(), bar.getY(),
+                                                         Theme::accent, lit.getX(), bar.getBottom(), false));
+                g.fillRoundedRectangle (lit, 2.0f);
+                juce::ignoreUnused (idx++);
+            }
         }
+
+        void lookAndFeelChanged() override { bgCache = {}; repaint(); }
 
         void resized() override
         {
@@ -310,6 +365,13 @@ namespace
             presetBtn.setBounds (header.removeFromRight (190));
             header.removeFromRight (4);
             prevBtn.setBounds (header.removeFromRight (28));
+            header.removeFromRight (10);
+            copyBtn.setBounds (header.removeFromRight (40));
+            header.removeFromRight (2);
+            bBtn.setBounds (header.removeFromRight (26));
+            aBtn.setBounds (header.removeFromRight (26));
+            header.removeFromRight (10);
+            meterArea = header.removeFromRight (26).reduced (0, 2);
 
             auto r = getLocalBounds().withTrimmedTop (kHeader).reduced (kMargin, 0);
             if (visual != nullptr)
@@ -402,6 +464,9 @@ namespace
                         addAndMakeVisible (k);
                         sliderAttachments.push_back (std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (plugin.apvts, id, k->slider));
                         k->slider.setDoubleClickReturnValue (true, rp->convertFrom0to1 (rp->getDefaultValue()));
+                        k->slider.automationProcessor = &plugin;
+                        k->slider.setName (p->getName (32));
+                        k->slider.automationParamIndex = rp->getParameterIndex();
                         k->slider.textFromValueFunction = [rp] (double v)
                         {
                             const auto label = rp->getLabel();
@@ -434,7 +499,7 @@ namespace
 
         void computeSize()
         {
-            int w = juce::jmax (460, plugin.getMinimumEditorWidth());
+            int w = juce::jmax (560, plugin.getMinimumEditorWidth());
             int h = kHeader + (visual != nullptr ? plugin.getVisualHeight() + kGap : 0);
             for (auto& row : rows)
             {
@@ -474,6 +539,9 @@ namespace
         {
             for (auto* seg : segments)
                 seg->refresh();
+            inShown = juce::jmax (plugin.inLevel.exchange (0.0f), inShown * 0.8f);
+            outShown = juce::jmax (plugin.outLevel.exchange (0.0f), outShown * 0.8f);
+            repaint (meterArea.expanded (2));
             const auto text = plugin.currentPresetName;
             if (presetBtn.getButtonText() != text)
                 presetBtn.setButtonText (text);
@@ -541,6 +609,15 @@ namespace
 
         AmethystPlugin& plugin;
         juce::TextButton prevBtn { "<" }, nextBtn { ">" }, presetBtn { "Default" };
+        juce::TextButton aBtn { "A" }, bBtn { "B" }, copyBtn { "Copy" };
+        juce::Rectangle<int> meterArea;
+        float inShown = 0.0f, outShown = 0.0f;
+        void refreshAB()
+        {
+            aBtn.setToggleState (plugin.getABSlot() == 0, juce::dontSendNotification);
+            bBtn.setToggleState (plugin.getABSlot() == 1, juce::dontSendNotification);
+            copyBtn.setButtonText (plugin.getABSlot() == 0 ? "A>B" : "B>A");
+        }
         std::unique_ptr<juce::Component> visual;
 
         juce::OwnedArray<LabeledKnob> knobs;

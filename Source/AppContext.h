@@ -5,6 +5,9 @@
 
 class PluginWindowManager;
 
+// Shown name of the app (window titles, wordmark). Data folders and ids stay "AMETHYST".
+inline const juce::String kAppTitle { "AMETHYST 2026" };
+
 constexpr int kHeaderWidth = 260;   // compact list-style track headers
 constexpr int kTrackHeight = 60;
 constexpr int kMixerStripWidth = 76;
@@ -83,6 +86,42 @@ struct TimelineView
     }
 };
 
+// What's selected on the timeline: clips (click, Ctrl-click to add) or a highlighted time range on one
+// track (Ctrl-drag). Message thread only.
+struct TimelineSelection
+{
+    std::vector<std::pair<Track*, std::weak_ptr<AudioClip>>> clips;
+    Track* rangeTrack = nullptr;
+    juce::int64 rangeStart = -1, rangeEnd = -1;
+    Track* lastTrack = nullptr;   // where you last clicked: Ctrl+V pastes here
+
+    bool hasRange() const noexcept { return rangeTrack != nullptr && rangeEnd > rangeStart; }
+    bool isSelected (const AudioClip* c) const
+    {
+        for (auto& [t, w] : clips) if (auto p = w.lock(); p.get() == c) return true;
+        return false;
+    }
+    void clear() { clips.clear(); rangeTrack = nullptr; rangeStart = rangeEnd = -1; }
+    void selectOnly (Track* t, const std::shared_ptr<AudioClip>& c) { clear(); clips.push_back ({ t, c }); lastTrack = t; }
+    void toggle (Track* t, const std::shared_ptr<AudioClip>& c)
+    {
+        rangeTrack = nullptr;
+        for (auto it = clips.begin(); it != clips.end(); ++it)
+            if (it->second.lock() == c) { clips.erase (it); return; }
+        clips.push_back ({ t, c });
+        lastTrack = t;
+    }
+};
+
+// Copied audio: clip copies with times relative to where the copy started.
+struct TimelineClipboard
+{
+    std::vector<std::shared_ptr<AudioClip>> clips;
+    Track* sourceTrack = nullptr;
+    juce::int64 from = 0, length = 0;
+    bool isEmpty() const noexcept { return clips.empty(); }
+};
+
 // Shared services handed to the UI components.
 struct AppContext
 {
@@ -99,6 +138,14 @@ struct AppContext
     std::function<void (const juce::String& what)> checkpoint;     // call before any clip edit (undo)
     std::function<void()> discardUnchangedCheckpoint;
     std::function<void (const juce::String& feature, int requiredTier)> showProPrompt;
+    std::function<void (Track& target, Automation::Kind, int slot, int param)> createAutomation;
+    std::function<void (const juce::String& title, const juce::String& text)> showReport;   // scrollable text window
+    // AMETHYST 2026 tools (Studio2026): track actions 1 bounce in place, 2 smart vocal chain, 3 set input level,
+    // 4 capture last performance; clip actions 1 reverse reverb swell
+    std::function<void (Track&, int action)> trackAction;
+    std::function<void (Track&, std::shared_ptr<AudioClip>, int action)> clipAction;
+    TimelineSelection selection;
+    TimelineClipboard clipboard;
     std::unique_ptr<juce::FileChooser> chooser; // keeps async file dialogs alive
 };
 

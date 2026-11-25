@@ -7,6 +7,10 @@ class GlassLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
     GlassLookAndFeel();
+    void refreshColours();   // call after Theme::applyTheme
+
+    // Buttons can be marked primary: button.getProperties().set ("primary", true)
+    static void makePrimary (juce::Button& b) { b.getProperties().set ("primary", true); }
 
     juce::Font getTextButtonFont (juce::TextButton&, int buttonHeight) override;
     void drawButtonBackground (juce::Graphics&, juce::Button&, const juce::Colour&, bool over, bool down) override;
@@ -27,6 +31,7 @@ public:
                             bool isHighlighted, bool isTicked, bool hasSubMenu, const juce::String& text,
                             const juce::String& shortcutKeyText, const juce::Drawable* icon, const juce::Colour* textColour) override;
     juce::Font getPopupMenuFont() override { return juce::FontOptions (14.0f); }
+    void drawPopupMenuSectionHeader (juce::Graphics&, const juce::Rectangle<int>& area, const juce::String& sectionName) override;
 
     void drawScrollbar (juce::Graphics&, juce::ScrollBar&, int x, int y, int w, int h, bool vertical,
                         int thumbStart, int thumbSize, bool over, bool down) override;

@@ -49,6 +49,16 @@ namespace ClipFx
     // Estimated tempo of a region (onset-envelope autocorrelation), 70..180 BPM; 0 if unsure.
     double detectTempo (const juce::AudioBuffer<float>&, int start, int length, double sampleRate);
 
+    // Estimated musical key (chroma + Krumhansl-Schmuckler key profiles). tonic: 0 = C .. 11 = B, -1 if unsure.
+    struct KeyResult
+    {
+        int tonic = -1;
+        bool minor = false;
+        float confidence = 0.0f;   // 0..1, how clearly this key beat the runner-up
+        juce::String name() const;
+    };
+    KeyResult detectKey (const juce::AudioBuffer<float>&, int start, int length, double sampleRate);
+
     // Silent stretches (below thresholdDb for at least minSilenceMs) as [start, end) sample ranges within the region.
     std::vector<std::pair<int, int>> findSilences (const juce::AudioBuffer<float>&, int start, int length, double sampleRate,
                                                    float thresholdDb = -45.0f, double minSilenceMs = 200.0);

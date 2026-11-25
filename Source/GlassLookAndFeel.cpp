@@ -13,11 +13,18 @@ GlassLookAndFeel::GlassLookAndFeel()
           0xffefe8ff))  // menuText
 {
    #if JUCE_WINDOWS
-    setDefaultSansSerifTypefaceName ("Segoe UI");
+    // Windows 11's variable UI font reads cleaner at small sizes; fall back to Segoe UI.
+    const auto names = juce::Font::findAllTypefaceNames();
+    setDefaultSansSerifTypefaceName (names.contains ("Segoe UI Variable Text") ? "Segoe UI Variable Text"
+                                     : names.contains ("Segoe UI Variable") ? "Segoe UI Variable" : "Segoe UI");
    #elif JUCE_MAC
-    setDefaultSansSerifTypefaceName ("Helvetica Neue");
+    setDefaultSansSerifTypefaceName ("SF Pro Text");
    #endif
+    refreshColours();
+}
 
+void GlassLookAndFeel::refreshColours()
+{
     setColour (juce::ResizableWindow::backgroundColourId, Theme::windowBg);
     setColour (juce::DocumentWindow::backgroundColourId, Theme::windowBg);
 
@@ -46,7 +53,7 @@ GlassLookAndFeel::GlassLookAndFeel()
     setColour (juce::TextEditor::highlightedTextColourId, juce::Colours::white);
     setColour (juce::CaretComponent::caretColourId, Theme::accent);
 
-    setColour (juce::PopupMenu::backgroundColourId, juce::Colour (0xff1a1029));
+    setColour (juce::PopupMenu::backgroundColourId, Theme::windowBg.interpolatedWith (Theme::accent, 0.06f));
     setColour (juce::PopupMenu::textColourId, Theme::text);
     setColour (juce::PopupMenu::headerTextColourId, Theme::accent);
     setColour (juce::PopupMenu::highlightedBackgroundColourId, Theme::accent.withAlpha (0.3f));
@@ -66,36 +73,44 @@ GlassLookAndFeel::GlassLookAndFeel()
 
 juce::Font GlassLookAndFeel::getTextButtonFont (juce::TextButton&, int buttonHeight)
 {
-    return juce::FontOptions (juce::jmin (14.0f, (float) buttonHeight * 0.55f), juce::Font::bold);
+    return juce::FontOptions (juce::jmin (13.5f, (float) buttonHeight * 0.5f), juce::Font::bold);
 }
 
 void GlassLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce::Colour&, bool over, bool down)
 {
     auto r = b.getLocalBounds().toFloat().reduced (1.0f);
-    const float rad = juce::jmin (r.getHeight() * 0.5f, 9.0f);
-    const bool on = b.getToggleState();
-    const auto onCol = b.findColour (juce::TextButton::buttonOnColourId);
+    if (down) r = r.reduced (0.5f).translated (0.0f, 0.5f);   // pressed: sinks slightly
+    const float rad = juce::jmin (r.getHeight() * 0.5f, 8.0f);
+    const bool primary = (bool) b.getProperties().getWithDefault ("primary", false);
+    const bool on = b.getToggleState() || primary;
+    const auto onCol = primary ? Theme::accent : b.findColour (juce::TextButton::buttonOnColourId);
+
+    if (over && b.isEnabled())
+    {
+        g.setColour ((on ? onCol : Theme::accent).withAlpha (0.16f));   // soft hover glow
+        g.fillRoundedRectangle (r.expanded (2.5f), rad + 2.5f);
+    }
 
     if (on)
     {
-        g.setColour (onCol.withAlpha (0.28f));
-        g.fillRoundedRectangle (r.expanded (2.0f), rad + 2.0f);
-        g.setGradientFill (juce::ColourGradient (onCol.brighter (0.25f), r.getX(), r.getY(),
-                                                 onCol.darker (0.35f), r.getX(), r.getBottom(), false));
+        g.setColour (onCol.withAlpha (0.22f));
+        g.fillRoundedRectangle (r.expanded (1.5f), rad + 1.5f);
+        g.setGradientFill (juce::ColourGradient (onCol.brighter (over ? 0.35f : 0.2f), r.getX(), r.getY(),
+                                                 onCol.darker (0.4f), r.getX(), r.getBottom(), false));
         g.fillRoundedRectangle (r, rad);
     }
     else
     {
-        g.setColour (juce::Colours::white.withAlpha (down ? 0.03f : (over ? 0.13f : 0.07f)));
+        g.setColour (juce::Colours::white.withAlpha (down ? 0.04f : (over ? 0.11f : 0.06f)));
         g.fillRoundedRectangle (r, rad);
     }
 
-    juce::ColourGradient sheen (juce::Colours::white.withAlpha (on ? 0.25f : 0.12f), r.getX(), r.getY(),
+    juce::ColourGradient sheen (juce::Colours::white.withAlpha (on ? 0.22f : 0.10f), r.getX(), r.getY(),
                                 juce::Colours::white.withAlpha (0.0f), r.getX(), r.getCentreY(), false);
     g.setGradientFill (sheen);
     g.fillRoundedRectangle (r, rad);
 
-    g.setColour (juce::Colours::white.withAlpha (over ? 0.30f : 0.15f));
+    g.setColour (juce::Colours::white.withAlpha (over ? 0.26f : 0.12f));
     g.drawRoundedRectangle (r.reduced (0.5f), rad, 1.0f);
 
     if (! b.isEnabled())
@@ -170,8 +185,8 @@ void GlassLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w,
 
     // glass knob body
     const auto body = r.reduced (lineW * 2.0f);
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff3c2a62), body.getCentreX(), body.getY(),
-                                             juce::Colour (0xff130a22), body.getCentreX(), body.getBottom(), false));
+    g.setGradientFill (juce::ColourGradient (Theme::accent.withMultipliedBrightness (0.38f).withMultipliedSaturation (0.75f), body.getCentreX(), body.getY(),
+                                             Theme::windowBg, body.getCentreX(), body.getBottom(), false));
     g.fillEllipse (body);
 
     auto sheenArea = body.reduced (body.getWidth() * 0.08f).withHeight (body.getHeight() * 0.5f);
@@ -229,8 +244,8 @@ void GlassLookAndFeel::drawLinearSlider (juce::Graphics& g, int x, int y, int w,
 
     g.setColour (Theme::accent.withAlpha (0.25f));
     g.fillRoundedRectangle (thumb.expanded (2.0f), 6.0f);
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff57427f), thumb.getX(), thumb.getY(),
-                                             juce::Colour (0xff1e1335), thumb.getX(), thumb.getBottom(), false));
+    g.setGradientFill (juce::ColourGradient (Theme::accent.withMultipliedBrightness (0.5f).withMultipliedSaturation (0.7f), thumb.getX(), thumb.getY(),
+                                             Theme::windowBg.interpolatedWith (Theme::accent, 0.08f), thumb.getX(), thumb.getBottom(), false));
     g.fillRoundedRectangle (thumb, 4.0f);
     g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (0.30f), thumb.getX(), thumb.getY(),
                                              juce::Colours::white.withAlpha (0.0f), thumb.getX(), thumb.getCentreY(), false));
@@ -285,7 +300,7 @@ void GlassLookAndFeel::positionComboBoxText (juce::ComboBox& box, juce::Label& l
 void GlassLookAndFeel::drawPopupMenuBackground (juce::Graphics& g, int w, int h)
 {
     const auto r = juce::Rectangle<float> (0.0f, 0.0f, (float) w, (float) h);
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff22163a), 0.0f, 0.0f, juce::Colour (0xff140c24), 0.0f, (float) h, false));
+    g.setGradientFill (juce::ColourGradient (Theme::windowBg.interpolatedWith (Theme::accent, 0.10f), 0.0f, 0.0f, Theme::windowBg, 0.0f, (float) h, false));
     g.fillRect (r);
     g.setColour (Theme::accent.withAlpha (0.35f));
     g.drawRect (r, 1.0f);
@@ -350,4 +365,16 @@ void GlassLookAndFeel::drawBubble (juce::Graphics& g, juce::BubbleComponent&, co
     g.fillRoundedRectangle (body, 6.0f);
     g.setColour (Theme::accent.withAlpha (0.6f));
     g.drawRoundedRectangle (body.reduced (0.5f), 6.0f, 1.0f);
+}
+
+// Section headers are full-width bands, so menus read as labelled groups (Automation, Value, ...).
+void GlassLookAndFeel::drawPopupMenuSectionHeader (juce::Graphics& g, const juce::Rectangle<int>& area, const juce::String& sectionName)
+{
+    auto band = area.toFloat().reduced (2.0f, 2.0f);
+    g.setGradientFill (juce::ColourGradient (Theme::accent.withAlpha (0.30f), band.getX(), band.getY(),
+                                             Theme::accent.withAlpha (0.12f), band.getRight(), band.getY(), false));
+    g.fillRoundedRectangle (band, 3.0f);
+    g.setColour (Theme::text.withAlpha (0.92f));
+    g.setFont (juce::FontOptions (12.5f, juce::Font::bold));
+    g.drawFittedText (sectionName, band.reduced (8.0f, 0.0f).toNearestInt(), juce::Justification::centredLeft, 1, 0.8f);
 }

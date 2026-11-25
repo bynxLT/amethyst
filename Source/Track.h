@@ -29,6 +29,7 @@ struct AudioClip
     int renderGeneration = 0;                  // message thread only
     juce::String name;                         // display name (empty = file name)
     juce::Colour colour;                       // transparent = default clip colour
+    bool lossless = false;                     // WAV / AIFF / FLAC: original edges play untouched (see AudioEngine::losslessUntouched)
 
     juce::String getDisplayName() const { return name.isNotEmpty() ? name : file.getFileNameWithoutExtension(); }
 
@@ -48,6 +49,40 @@ struct AudioClip
     }
 
     juce::int64 getEnd() const noexcept { return startSample.load() + getLength(); }
+};
+
+class Track;
+
+// Automation clip: an envelope over time that drives one control of a channel
+// (its volume, its pan, or one parameter of a plug-in in one of its slots).
+struct AutomationPoint
+{
+    double seconds = 0.0;
+    float value = 0.0f;   // normalised 0..1
+};
+
+struct Automation
+{
+    enum class Kind { Volume, Pan, Param };
+    Kind kind = Kind::Param;
+    Track* target = nullptr;   // the channel (may be the master); nullptr once that channel is deleted
+    int slot = -1;             // insert slot (Kind::Param)
+    int param = -1;            // parameter index in that plug-in (Kind::Param)
+    std::vector<AutomationPoint> points;   // sorted by time; edited only under the engine lock
+
+    float valueAt (double seconds) const
+    {
+        if (points.empty())
+            return 0.0f;
+        if (seconds <= points.front().seconds) return points.front().value;
+        if (seconds >= points.back().seconds)  return points.back().value;
+        auto hi = std::upper_bound (points.begin(), points.end(), seconds,
+                                    [] (double s, const AutomationPoint& p) { return s < p.seconds; });
+        auto lo = hi - 1;
+        const double span = hi->seconds - lo->seconds;
+        const float f = span > 1.0e-9 ? (float) ((seconds - lo->seconds) / span) : 1.0f;
+        return lo->value + (hi->value - lo->value) * f;
+    }
 };
 
 // A mixer channel (+ timeline lane for normal tracks). The master bus is also a Track.
@@ -90,18 +125,38 @@ public:
     // (its plug-ins, fader and pan) instead of its own. Changed only via AudioEngine::setPlayThrough.
     Track* playThrough = nullptr;
     std::atomic<int>   inputChannel { 0 };     // index into the device's *active* input channels
+    std::atomic<float> inputGainDb { 0.0f };   // mic boost before recording and monitoring (-12 .. +24 dB)
     std::atomic<bool>  stereoInput { false };
 
     std::atomic<float> meterL { 0.0f }, meterR { 0.0f }; // peak since last UI read
+    std::atomic<bool>  clipped { false };                 // output went over 0 dBFS (UI clears it)
+    std::atomic<float> inputPeak { 0.0f };                // input level (after input gain) of armed / monitored tracks; UI reads and resets
+
+    // Channel strip extras (before the inserts)
+    std::atomic<bool>  phaseInvert { false };
+    std::atomic<float> lowCutHz { 0.0f };      // 0 = off, else a 12 dB/oct high-pass at this frequency
+    juce::Colour colour;                       // message thread; transparent = default look
+
+    // Plug-in delay compensation: total latency of this channel's inserts (published for the UI)
+    std::atomic<int> latencySamples { 0 };
 
     std::vector<std::shared_ptr<AudioClip>> clips;     // oldest first; newer clips win where they overlap
     std::vector<std::unique_ptr<InsertSlot>> inserts;  // always maxInserts entries
+
+    // Set = this row is an automation clip lane (no audio of its own).
+    std::unique_ptr<Automation> automation;
+    bool isAutomation() const noexcept { return automation != nullptr; }
 
     std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> recorder;
     juce::File recordingFile;
 
     // audio-thread-only state
     float smoothedGainL = 1.0f, smoothedGainR = 1.0f;
+    juce::IIRFilter lowCutFilter[2];
+    float lowCutDesigned = -1.0f;
+    static constexpr int pdcSize = 1 << 16;     // up to ~1.3 s of compensation at 48 kHz
+    std::vector<float> pdcLine[2] { std::vector<float> ((size_t) pdcSize, 0.0f), std::vector<float> ((size_t) pdcSize, 0.0f) };
+    int pdcPos = 0;
 
     JUCE_DECLARE_NON_COPYABLE (Track)
 };

@@ -7,27 +7,33 @@
 void drawAvatar (juce::Graphics&, juce::Rectangle<float> area, const juce::Image& picture, const juce::String& email, bool pro);
 
 // Toolbar account button: avatar + plan text.
-class AccountBadge : public juce::Button
+class AccountBadge : public juce::Button, private juce::Timer
 {
 public:
     AccountBadge() : juce::Button ("Account") {}
 
-    void setInfo (const juce::Image& picture, const juce::String& emailText, const juce::String& label, bool isPro, bool signedIn)
+    // tier: 0 free, 1 Pro (gem), 2 Ultra Pro (crown + slow shimmer)
+    void setInfo (const juce::Image& picture, const juce::String& emailText, const juce::String& label, int planTier, bool signedIn)
     {
-        avatar = picture; email = emailText; text = label; pro = isPro; showAvatar = signedIn;
+        avatar = picture; email = emailText; text = label; tier = planTier; pro = planTier >= 1; showAvatar = signedIn;
+        if (tier >= 2 || (pro && avatar.getWidth() >= avatar.getHeight() * 2)) startTimerHz (25); else stopTimer();   // shimmer / animated picture
         repaint();
     }
 
     void paintButton (juce::Graphics&, bool over, bool down) override;
 
 private:
+    void timerCallback() override { shimmer += 0.012f; if (shimmer > 1.6f) shimmer = -0.6f; repaint(); }
+
     juce::Image avatar;
     juce::String email, text { "Sign in" };
     bool pro = false, showAvatar = false;
+    int tier = 0;
+    float shimmer = -0.6f;
 };
 
 // Sign in / create account / plan status.
-class AccountPanel : public juce::Component, private juce::ChangeListener
+class AccountPanel : public juce::Component, private juce::ChangeListener, private juce::Timer
 {
 public:
     explicit AccountPanel (Account&);
@@ -40,6 +46,7 @@ public:
 
 private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override { refresh(); }
+    void timerCallback() override;
     void refresh();
 
     Account& account;

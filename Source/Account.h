@@ -41,7 +41,8 @@ public:
 
     // Profile picture in Supabase Storage (bucket "avatars", path <uid>/avatar.png).
     struct Blob { bool ok = false; bool notFound = false; bool networkError = false; juce::String error; juce::MemoryBlock data; };
-    juce::String uploadAvatar (const juce::String& accessToken, const juce::String& userId, const juce::MemoryBlock& png) const; // empty = success
+    juce::String uploadAvatar (const juce::String& accessToken, const juce::String& userId, const juce::MemoryBlock& image,
+                               const juce::String& mimeType = "image/png") const; // empty = success
     Blob downloadAvatar (const juce::String& accessToken, const juce::String& userId) const;
     juce::String deleteAvatar (const juce::String& accessToken, const juce::String& userId) const;
 

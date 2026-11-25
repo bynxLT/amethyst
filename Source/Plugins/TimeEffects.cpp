@@ -24,28 +24,35 @@ namespace
     };
 
     //==========================================================================
+    // Crystal Echo: tempo-synced stereo delay with four characters (Clean, Tape, Lo-fi, Diffuse),
+    // wow / flutter, a band-limited feedback path with drive, and ducking while the dry signal plays.
     class EchoPlugin : public AmethystPlugin
     {
     public:
-        EchoPlugin() : AmethystPlugin ("amethyst.echo", "Crystal Echo", "Delay", "Tempo-synced stereo delay", makeLayout())
+        EchoPlugin() : AmethystPlugin ("amethyst.echo", "Crystal Echo", "Delay", "Tempo-synced character delay", makeLayout())
         {
             tailSeconds = 8.0;
             sections = {
-                { "Input", { "in_pan", "in_vol" }, 0 },
-                { "Feedback", { "fb_mode", "fb", "fb_cut" }, 0 },
-                { "Time", { "sync", "div", "time", "offset" }, 1 },
-                { "Mix", { "dry", "wet" }, 1 },
+                { "Character", { "style", "mod", "drive" }, 0 },
+                { "Time", { "sync", "div", "time", "offset" }, 0 },
+                { "Feedback", { "fb_mode", "fb", "fb_low", "fb_cut" }, 1 },
+                { "Input", { "in_pan", "in_vol" }, 1 },
+                { "Mix", { "duck", "dry", "wet" }, 1 },
             };
 
             presets = {
                 { "Default", {} },
-                { "Slapback",      { { "sync", 0 }, { "time", 95 }, { "fb", 10 }, { "wet", 30 } } },
-                { "Vocal Quarter", { { "div", 8 }, { "fb", 30 }, { "wet", 22 }, { "fb_cut", 5000 } } },
-                { "Dotted Eighth", { { "div", 6 }, { "fb", 35 }, { "wet", 25 } } },
-                { "Ping-pong",     { { "fb_mode", 2 }, { "div", 5 }, { "fb", 45 }, { "wet", 30 } } },
-                { "Wide Doubler",  { { "sync", 0 }, { "time", 18 }, { "offset", 100 }, { "fb", 0 }, { "wet", 50 } } },
-                { "Dub Echo",      { { "div", 9 }, { "fb", 70 }, { "fb_cut", 2500 }, { "wet", 40 } } },
-                { "Weird",         { { "fb_mode", 1 }, { "div", 1 }, { "fb", 80 }, { "offset", 60 } } },
+                { "Slapback",       { { "sync", 0 }, { "time", 95 }, { "fb", 10 }, { "wet", 30 } } },
+                { "Vocal Quarter",  { { "div", 8 }, { "fb", 30 }, { "wet", 22 }, { "fb_cut", 5000 }, { "fb_low", 250 }, { "duck", 40 } } },
+                { "Dotted Eighth",  { { "div", 6 }, { "fb", 35 }, { "wet", 25 }, { "duck", 30 } } },
+                { "Ping-pong",      { { "fb_mode", 2 }, { "div", 5 }, { "fb", 45 }, { "wet", 30 } } },
+                { "Wide Doubler",   { { "sync", 0 }, { "time", 18 }, { "offset", 100 }, { "fb", 0 }, { "wet", 50 } } },
+                { "Tape Echo",      { { "style", 1 }, { "div", 6 }, { "fb", 50 }, { "mod", 35 }, { "drive", 40 }, { "fb_cut", 4000 }, { "wet", 30 } } },
+                { "Dub Echo",       { { "style", 1 }, { "div", 9 }, { "fb", 72 }, { "fb_cut", 2500 }, { "fb_low", 200 }, { "drive", 55 }, { "wet", 40 } } },
+                { "Lo-fi Phone",    { { "style", 2 }, { "div", 5 }, { "fb", 40 }, { "fb_low", 400 }, { "fb_cut", 3000 }, { "wet", 35 } } },
+                { "Diffuse Cloud",  { { "style", 3 }, { "div", 8 }, { "fb", 60 }, { "mod", 20 }, { "wet", 35 }, { "duck", 50 } } },
+                { "Ducked Vocal Throw", { { "div", 8 }, { "fb", 45 }, { "fb_low", 300 }, { "fb_cut", 6000 }, { "wet", 40 }, { "duck", 80 } } },
+                { "Weird",          { { "fb_mode", 1 }, { "div", 1 }, { "fb", 80 }, { "offset", 60 } } },
             };
         }
 
@@ -56,11 +63,16 @@ namespace
             l.add (AmParams::num ("in_vol", "Volume", 0.0f, 100.0f, 100.0f, "%", 0));
             l.add (AmParams::choice ("fb_mode", "Mode", { "Normal", "Invert", "Ping-pong" }, 0));
             l.add (AmParams::num ("fb", "Amount", 0.0f, 95.0f, 40.0f, "%", 0));
-            l.add (AmParams::num ("fb_cut", "Cutoff", 500.0f, 20000.0f, 7000.0f, "Hz", 0, 4000.0f));
+            l.add (AmParams::num ("fb_cut", "High cut", 500.0f, 20000.0f, 7000.0f, "Hz", 0, 4000.0f));
+            l.add (AmParams::num ("fb_low", "Low cut", 20.0f, 1000.0f, 20.0f, "Hz", 0, 150.0f));
             l.add (AmParams::toggle ("sync", "Sync", true));
             l.add (AmParams::choice ("div", "Division", { "1/32", "1/16T", "1/16", "1/16D", "1/8T", "1/8", "1/8D", "1/4T", "1/4", "1/4D", "1/2", "1/1" }, 6));
             l.add (AmParams::num ("time", "Time", 1.0f, 2000.0f, 350.0f, "ms", 0, 300.0f));
             l.add (AmParams::num ("offset", "Offset", -100.0f, 100.0f, 0.0f, "%", 0));
+            l.add (AmParams::choice ("style", "Style", { "Clean", "Tape", "Lo-fi", "Diffuse" }, 0));
+            l.add (AmParams::num ("mod", "Wow", 0.0f, 100.0f, 0.0f, "%", 0));
+            l.add (AmParams::num ("drive", "Drive", 0.0f, 100.0f, 0.0f, "%", 0));
+            l.add (AmParams::num ("duck", "Duck", 0.0f, 100.0f, 0.0f, "%", 0));
             l.add (AmParams::num ("dry", "Dry", 0.0f, 100.0f, 100.0f, "%", 0));
             l.add (AmParams::num ("wet", "Wet", 0.0f, 100.0f, 35.0f, "%", 0));
             return l;
@@ -71,11 +83,17 @@ namespace
             sampleRate = sr;
             for (auto& d : lines) d.setMax ((int) (sr * 4.5));
             for (auto& s : smooth) s.reset (sr, 0.12);
-            lpL = lpR = 0.0f;
+            for (auto& a : smear) a.setMax ((int) (sr * 0.03));
+            lp.fill (0.0f);
+            hp.fill (0.0f);
+            hold.fill (0.0f);
+            holdCount = 0;
+            wow = flutter = 0.0;
+            duckEnv = 0.0f;
             first = true;
         }
 
-        void processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
+        void process (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
         {
             juce::ScopedNoDenormals noDenormals;
             const int n = buffer.getNumSamples();
@@ -94,39 +112,108 @@ namespace
             const float inVol = get ("in_vol") * 0.01f;
             const float gl = inVol * std::cos (panAngle) * juce::MathConstants<float>::sqrt2, gr = inVol * std::sin (panAngle) * juce::MathConstants<float>::sqrt2;
             const int mode = getInt ("fb_mode");
+            const int style = getInt ("style");
             const float fb = get ("fb") * 0.01f * (mode == 1 ? -1.0f : 1.0f);
-            const float lpc = (float) std::exp (-juce::MathConstants<double>::twoPi * get ("fb_cut") / sampleRate);
+            const float lpc = (float) std::exp (-juce::MathConstants<double>::twoPi * (style == 2 ? juce::jmin (get ("fb_cut"), 3500.0f) : get ("fb_cut")) / sampleRate);
+            const float hpc = (float) std::exp (-juce::MathConstants<double>::twoPi * (style == 2 ? juce::jmax (get ("fb_low"), 300.0f) : get ("fb_low")) / sampleRate);
             const float dry = get ("dry") * 0.01f, wet = get ("wet") * 0.01f;
+            const float drive = get ("drive") * 0.01f + (style == 1 ? 0.25f : 0.0f);
+            const float driveK = 1.0f + 3.0f * drive, driveNorm = std::tanh (driveK);
+            const double modDepth = get ("mod") * 0.01 * sampleRate * (style == 1 ? 0.004 : 0.0015) + (style == 1 ? sampleRate * 0.0004 : 0.0);
+            const double wowInc = juce::MathConstants<double>::twoPi * 0.55 / sampleRate, flutterInc = juce::MathConstants<double>::twoPi * 6.3 / sampleRate;
+            const float duck = get ("duck") * 0.01f;
+            const float duckAtt = coef (6.0, sampleRate), duckRel = coef (300.0, sampleRate);
+            const int smearA = (int) (0.0071 * sampleRate), smearB = (int) (0.0113 * sampleRate);
+            const int crush = juce::jmax (1, (int) std::lround (sampleRate / 11025.0));
 
             for (int i = 0; i < n; ++i)
             {
                 const float xl = buffer.getSample (0, i), xr = nCh > 1 ? buffer.getSample (1, i) : xl;
-                const float yl = lines[0].read (smooth[0].getNextValue());
-                const float yr = lines[1].read (smooth[1].getNextValue());
-                lpL = (1.0f - lpc) * yl + lpc * lpL;
-                lpR = (1.0f - lpc) * yr + lpc * lpR;
+
+                // wow + flutter move the read heads
+                const double m = modDepth > 0.0 ? modDepth * (0.75 * (1.0 + std::sin (wow)) + 0.25 * (1.0 + std::sin (flutter))) : 0.0;
+                wow += wowInc; flutter += flutterInc;
+                float y[2] = { lines[0].read (smooth[0].getNextValue() + m), lines[1].read (smooth[1].getNextValue() + m * 0.9) };
+
+                // character on the echoes
+                for (int c = 0; c < 2; ++c)
+                {
+                    lp[(size_t) c] = (1.0f - lpc) * y[c] + lpc * lp[(size_t) c];
+                    hp[(size_t) c] = hpc * hp[(size_t) c] + (1.0f - hpc) * lp[(size_t) c];
+                    float v = lp[(size_t) c] - hp[(size_t) c];
+                    if (drive > 0.001f)
+                        v = v + drive * (std::tanh (driveK * v) / driveNorm - v);
+                    if (style == 2)   // lo-fi: lower sample rate + 8-bit
+                    {
+                        if (c == 0 && ++holdCount >= crush) holdCount = 0;
+                        if (holdCount == 0) hold[(size_t) c] = std::round (v * 127.0f) / 127.0f;
+                        v = hold[(size_t) c];
+                    }
+                    else if (style == 3)   // diffuse: smear each repeat
+                    {
+                        v = smear[(size_t) c * 2].process (v, smearA + c * 37, 0.6f);
+                        v = smear[(size_t) c * 2 + 1].process (v, smearB + c * 53, 0.55f);
+                    }
+                    y[c] = v;
+                }
 
                 const float il = xl * gl, ir = xr * gr;
                 if (mode == 2)
                 {
-                    lines[0].push ((il + ir) * 0.5f + lpR * fb);
-                    lines[1].push (lpL * fb);
+                    lines[0].push ((il + ir) * 0.5f + y[1] * fb);
+                    lines[1].push (y[0] * fb);
                 }
                 else
                 {
-                    lines[0].push (il + lpL * fb);
-                    lines[1].push (ir + lpR * fb);
+                    lines[0].push (il + y[0] * fb);
+                    lines[1].push (ir + y[1] * fb);
                 }
 
-                buffer.setSample (0, i, xl * dry + yl * wet);
-                if (nCh > 1) buffer.setSample (1, i, xr * dry + yr * wet);
+                // ducking: echoes dip while you sing, bloom in the gaps
+                float duckGain = 1.0f;
+                if (duck > 0.0f)
+                {
+                    const float lvl = juce::jmax (std::abs (xl), std::abs (xr));
+                    duckEnv = lvl > duckEnv ? duckAtt * duckEnv + (1.0f - duckAtt) * lvl : duckRel * duckEnv + (1.0f - duckRel) * lvl;
+                    const float amount = juce::jlimit (0.0f, 1.0f, (juce::Decibels::gainToDecibels (duckEnv, -100.0f) + 45.0f) / 30.0f);
+                    duckGain = juce::Decibels::decibelsToGain (-20.0f * duck * amount);
+                }
+
+                buffer.setSample (0, i, xl * dry + y[0] * wet * duckGain);
+                if (nCh > 1) buffer.setSample (1, i, xr * dry + y[1] * wet * duckGain);
             }
+            if (wow > 1000.0) wow = std::fmod (wow, juce::MathConstants<double>::twoPi);
+            if (flutter > 1000.0) flutter = std::fmod (flutter, juce::MathConstants<double>::twoPi);
         }
 
     private:
+        struct Smear
+        {
+            std::vector<float> buf;
+            int w = 0;
+            void setMax (int n) { buf.assign ((size_t) juce::jmax (4, n), 0.0f); w = 0; }
+            float process (float x, int delay, float g)
+            {
+                delay = juce::jlimit (1, (int) buf.size() - 1, delay);
+                int r = w - delay;
+                if (r < 0) r += (int) buf.size();
+                const float d = buf[(size_t) r];
+                const float v = x + g * d;
+                buf[(size_t) w] = v;
+                if (++w >= (int) buf.size()) w = 0;
+                return d - g * v;
+            }
+        };
+
+        static float coef (double timeMs, double sr) { return (float) std::exp (-1.0 / (juce::jmax (0.01, timeMs) * 0.001 * sr)); }
+
         std::array<DelayLine, 2> lines;
         std::array<juce::SmoothedValue<double, juce::ValueSmoothingTypes::Linear>, 2> smooth;
-        float lpL = 0.0f, lpR = 0.0f;
+        std::array<Smear, 4> smear;
+        std::array<float, 2> lp {}, hp {}, hold {};
+        int holdCount = 0;
+        double wow = 0.0, flutter = 0.0;
+        float duckEnv = 0.0f;
         bool first = true;
     };
 
@@ -177,7 +264,7 @@ namespace
             fbL = fbR = 0.0f;
         }
 
-        void processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
+        void process (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
         {
             juce::ScopedNoDenormals noDenormals;
             const int n = buffer.getNumSamples();
@@ -265,7 +352,7 @@ namespace
             env.fill (0.0f);
         }
 
-        void processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
+        void process (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
         {
             juce::ScopedNoDenormals noDenormals;
             const float amt = get ("amount") * 0.01f;

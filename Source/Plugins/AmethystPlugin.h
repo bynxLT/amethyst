@@ -55,6 +55,28 @@ public:
     void setStateInformation (const void* data, int sizeInBytes) override;
     void releaseResources() override {}
 
+    // Measures input / output level for the editor's meters around process().
+    void processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi) final
+    {
+        const int n = buffer.getNumSamples();
+        storeMaxLevel (inLevel, buffer.getMagnitude (0, n));
+        process (buffer, midi);
+        storeMaxLevel (outLevel, buffer.getMagnitude (0, n));
+    }
+    virtual void process (juce::AudioBuffer<float>&, juce::MidiBuffer&) = 0;
+    std::atomic<float> inLevel { 0.0f }, outLevel { 0.0f };   // peak since the editor last read it
+
+    // Sidechain: the engine publishes every track's output (track numbers as in the track list, from 1).
+    // Called on the audio thread. A track later in the list arrives one block late, which is fine for ducking.
+    using SidechainSource = std::function<bool (int trackNumber, int numSamples, const float*& left, const float*& right)>;
+    static SidechainSource& sidechainSource() { static SidechainSource s; return s; }
+    static void*& sidechainOwner() { static void* o = nullptr; return o; }
+
+    // A/B compare: two complete settings snapshots; switching stores the current one first.
+    void selectAB (int slot);
+    void copyCurrentToOtherAB();
+    int getABSlot() const noexcept { return abSlot; }
+
     //==========================================================================
     void applyPreset (const Preset&);
     void randomize();
@@ -87,6 +109,9 @@ protected:
 
 private:
     std::map<std::string, std::atomic<float>*> params;
+    std::array<juce::MemoryBlock, 2> abStates;
+    int abSlot = 0;
+    static void storeMaxLevel (std::atomic<float>& a, float v) { if (v > a.load()) a.store (v); }
 };
 
 //==============================================================================

@@ -9,6 +9,7 @@ public:
     TrackComponent (AppContext&, Track&);
 
     Track& getTrack() noexcept { return track; }
+    void flash() { flashUntil = juce::Time::getMillisecondCounter() + 900; repaint(); }
 
     void refreshInputs();
     void tick();
@@ -53,7 +54,7 @@ private:
     int lastDragX = 0;
     bool lastBypassSnap = false;
 
-    enum class Drag { None, Move, TrimStart, TrimEnd };
+    enum class Drag { None, Move, TrimStart, TrimEnd, Range };
     Drag dragMode = Drag::None;
     float hoverX = -1.0f;                     // cut-tool preview line
     const AudioClip* hoverEdgeClip = nullptr; // trim handle highlight
@@ -69,11 +70,35 @@ private:
     juce::ComboBox inputBox;   // hidden; holds the device's input list for the menu
     void showTrackMenu();
 
+    // Automation clip lanes (AutomationLane.cpp)
+    void paintAutomation (juce::Graphics&);
+    void automationMouseDown (const juce::MouseEvent&);
+    void automationMouseDrag (const juce::MouseEvent&);
+    void automationMouseMove (const juce::MouseEvent&);
+    void automationDoubleClick (const juce::MouseEvent&);
+    void showAutomationMenu();
+    int automationPointAt (juce::Point<int>) const;
+    juce::Point<float> automationPointPos (const AutomationPoint&) const;
+    float automationValueAtY (int y) const;
+    int autoDragIndex = -1, autoHoverIndex = -1;
+    juce::uint32 flashUntil = 0;
+
     std::map<const AudioClip*, Thumb> thumbs;
     std::weak_ptr<AudioClip> draggingClip;
     double dragGrabOffsetSec = 0.0;
+    std::vector<std::pair<std::weak_ptr<AudioClip>, juce::int64>> groupStarts;   // other selected clips move along
+    juce::int64 grabbedStart = 0, rangeAnchor = 0;
+    std::shared_ptr<AudioClip> ctrlClickClip;
+    // hold right-click to delete (a quick right-click still opens the menu)
+    bool rightDown = false, rightDeleting = false;
+    juce::Point<int> rightDownPos;
+    int rightToken = 0;
+    void beginRightDelete();
+    void deleteUnder (juce::Point<int> posInThis);
+    void repaintTimeline();
 
     float levelL = 0.0f, levelR = 0.0f;
+    bool hovered = false;
 
     JUCE_DECLARE_NON_COPYABLE (TrackComponent)
 };
@@ -86,9 +111,9 @@ public:
     explicit RulerComponent (AppContext& c) : ctx (c) {}
 
     void paint (juce::Graphics&) override;
-    void mouseDown (const juce::MouseEvent& e) override { dragX = e.x; bypassSnap = e.mods.isShiftDown(); seekTo (e.x); startTimerHz (40); }
-    void mouseDrag (const juce::MouseEvent& e) override { dragX = e.x; bypassSnap = e.mods.isShiftDown(); seekTo (e.x); }
-    void mouseUp (const juce::MouseEvent&) override     { stopTimer(); }
+    void mouseDown (const juce::MouseEvent& e) override;
+    void mouseDrag (const juce::MouseEvent& e) override;
+    void mouseUp (const juce::MouseEvent&) override     { stopTimer(); punchDragging = false; loopDragging = false; }
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
 private:
@@ -97,7 +122,14 @@ private:
     AppContext& ctx;
     int dragX = 0;
     bool bypassSnap = false;
+    bool punchDragging = false, loopDragging = false;
+    double punchAnchor = 0.0;
+    double timeAt (int x, bool bypass) const;
+    void showRulerMenu (int x);
 };
+
+// Adds a marker (auto-named Intro, Verse, Hook ...) and keeps the list sorted.
+void addMarkerAt (AudioEngine&, double seconds);
 
 // Ctrl + wheel = zoom at the mouse, Shift + wheel (or a sideways swipe) = scroll. Returns true if handled.
 bool handleTimelineWheel (TimelineView&, const juce::MouseEvent&, const juce::MouseWheelDetails&, juce::Rectangle<int> lane);

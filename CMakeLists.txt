@@ -1,13 +1,16 @@
 cmake_minimum_required(VERSION 3.22)
 
 # Internal target name stays "VocalDAW" so the existing build folder keeps working;
-# the app itself is called AMETHYST (AMETHYST.exe).
+# the app itself is called AMETHYST 2026 ("AMETHYST 2026.exe").
 # macOS: support macOS 13 Ventura and later, one universal binary for Apple Silicon + Intel.
 # (Must be set before project(); ignored on Windows.)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS version")
 set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "macOS architectures")
 
-project(VocalDAW VERSION 0.2.0 LANGUAGES C CXX)
+# Windows: link the C++ runtime statically, so the installer needs no Visual C++ redistributable.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+project(VocalDAW VERSION 1.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -22,8 +25,10 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(JUCE)
 
 juce_add_gui_app(VocalDAW
-    PRODUCT_NAME "AMETHYST"
+    PRODUCT_NAME "AMETHYST 2026"
     COMPANY_NAME "AMETHYST"
+    ICON_BIG     "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icon.png"
+    ICON_SMALL   "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icon.png"
     VERSION      ${PROJECT_VERSION}
     # macOS bundle settings (ignored on Windows)
     BUNDLE_ID                      com.amethyst.daw
@@ -49,6 +54,14 @@ target_sources(VocalDAW PRIVATE
     Source/Main.cpp
     Source/AudioEngine.cpp
     Source/Presets.cpp
+    Source/FlpReader.cpp
+    Source/FlpImport.cpp
+    Source/NightcoreMaker.cpp
+    Source/WelcomeScreen.cpp
+    Source/DiscordPresence.cpp
+    Source/AvatarMedia.cpp
+    Source/VideoFrames.cpp
+    Source/Updater.cpp
     Source/GlassLookAndFeel.cpp
     Source/ClipFx.cpp
     Source/ClipEditor.cpp
@@ -61,6 +74,10 @@ target_sources(VocalDAW PRIVATE
     Source/Plugins/EqPlugin.cpp
     Source/Plugins/DynamicsReverb.cpp
     Source/Plugins/TimeEffects.cpp
+    Source/Plugins/StudioEffects.cpp
+    Source/Plugins/ExtraEffects.cpp
+    Source/SelfTest2.cpp
+    Source/Studio2026.cpp
     Source/Plugins/VocalEffects.cpp
     Source/Plugins/TunePlugin.cpp
     Source/Account.cpp
@@ -68,6 +85,12 @@ target_sources(VocalDAW PRIVATE
     Source/Exporter.cpp
     Source/Encoders.cpp
 )
+
+# --- Discord Rich Presence ---------------------------------------------------
+# Application ID from https://discord.com/developers/applications (public, not a secret).
+# Can also be set inside the app: Settings > Discord status > Set application ID.
+set(AMETHYST_DISCORD_APP_ID "1575038344239517856" CACHE STRING "Discord application id for Rich Presence")
+target_compile_definitions(VocalDAW PRIVATE AMETHYST_DISCORD_APP_ID="${AMETHYST_DISCORD_APP_ID}")
 
 # --- Supabase (accounts / AMETHYST Pro) ---------------------------------------
 # Put your project URL and anon (publishable) key in config/supabase.json
@@ -120,6 +143,7 @@ target_link_libraries(VocalDAW
         juce::juce_audio_utils
         juce::juce_audio_processors
         juce::juce_dsp
+        juce::juce_cryptography
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags

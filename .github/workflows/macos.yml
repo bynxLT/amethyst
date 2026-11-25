@@ -53,26 +53,26 @@ jobs:
         run: cmake --build build --config Release -- -quiet
 
       - name: Sign (ad-hoc)
-        run: codesign --force --deep --sign - "build/VocalDAW_artefacts/Release/AMETHYST.app"
+        run: codesign --force --deep --sign - "build/VocalDAW_artefacts/Release/AMETHYST 2026.app"
 
       - name: Check binary
         run: |
-          APP="build/VocalDAW_artefacts/Release/AMETHYST.app"
+          APP="build/VocalDAW_artefacts/Release/AMETHYST 2026.app"
           lipo -info "$APP/Contents/MacOS/AMETHYST"
           otool -l "$APP/Contents/MacOS/AMETHYST" | grep -A3 -E "LC_BUILD_VERSION|LC_VERSION_MIN" | head -8
           /usr/libexec/PlistBuddy -c "Print :NSMicrophoneUsageDescription" "$APP/Contents/Info.plist"
 
       - name: Self-test (DSP + built-in effects)
-        run: build/VocalDAW_artefacts/Release/AMETHYST.app/Contents/MacOS/AMETHYST --selftest
+        run: "build/VocalDAW_artefacts/Release/AMETHYST 2026.app/Contents/MacOS/AMETHYST 2026" --selftest
 
       - name: Package DMG
         run: |
           mkdir -p dmg
-          cp -R "build/VocalDAW_artefacts/Release/AMETHYST.app" dmg/
+          cp -R "build/VocalDAW_artefacts/Release/AMETHYST 2026.app" dmg/
           ln -s /Applications dmg/Applications
-          hdiutil create -volname "AMETHYST" -srcfolder dmg -ov -format UDZO "AMETHYST-macOS.dmg"
+          hdiutil create -volname "AMETHYST 2026" -srcfolder dmg -ov -format UDZO "AMETHYST-2026-macOS.dmg"
 
       - uses: actions/upload-artifact@v4
         with:
           name: AMETHYST-macOS
-          path: AMETHYST-macOS.dmg
+          path: AMETHYST-2026-macOS.dmg

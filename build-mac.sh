@@ -7,13 +7,13 @@ cd "$(dirname "$0")"
 cmake -S . -B build-mac -G Xcode -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
 cmake --build build-mac --config Release -- -quiet
 
-APP="build-mac/VocalDAW_artefacts/Release/AMETHYST.app"
+APP="build-mac/VocalDAW_artefacts/Release/AMETHYST 2026.app"
 codesign --force --deep --sign - "$APP"
 "$APP/Contents/MacOS/AMETHYST" --selftest
 
 rm -rf dmg && mkdir dmg
 cp -R "$APP" dmg/
 ln -s /Applications dmg/Applications
-hdiutil create -volname "AMETHYST" -srcfolder dmg -ov -format UDZO AMETHYST-macOS.dmg
+hdiutil create -volname "AMETHYST 2026" -srcfolder dmg -ov -format UDZO AMETHYST-2026-macOS.dmg
 rm -rf dmg
 echo "Done: $(pwd)/AMETHYST-macOS.dmg"

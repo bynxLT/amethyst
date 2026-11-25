@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Track.h"
+#include "LastTweaked.h"
 
 bool amethystSetWindowOwner (void* child, void* owner);
 
@@ -140,6 +141,8 @@ public:
         const auto area = PluginWindowLayout::usableArea ({});
         setResizeLimits (120, 80, area.getWidth(), area.getHeight());
 
+        plugin.addListener (&tweakListener);
+
         centreWithSize (getWidth(), getHeight());
         setVisible (true);
         FloatAboveMain::attach (*this);
@@ -148,6 +151,7 @@ public:
 
     ~PluginWindow() override
     {
+        plugin.removeListener (&tweakListener);
         cancelPendingUpdate();
         clearContentComponent(); // deletes the editor before the window
     }
@@ -188,6 +192,7 @@ private:
     void handleAsyncUpdate() override { keepOnScreen(); }
 
     std::function<void (PluginWindow*)> closeCallback;
+    LastTweaked::Listener tweakListener;
     JUCE_DECLARE_NON_COPYABLE (PluginWindow)
 };
 

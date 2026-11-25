@@ -1,4 +1,5 @@
 ﻿#include "Account.h"
+#include "AvatarMedia.h"
 
 bool amethystProtect (const void* data, std::size_t size, std::vector<unsigned char>& out, bool encrypt);
 
@@ -79,9 +80,10 @@ namespace
     }
 }
 
-juce::String SupabaseApi::uploadAvatar (const juce::String& accessToken, const juce::String& userId, const juce::MemoryBlock& png) const
+juce::String SupabaseApi::uploadAvatar (const juce::String& accessToken, const juce::String& userId, const juce::MemoryBlock& image,
+                                       const juce::String& mimeType) const
 {
-    const auto r = sendBytes ("POST", "/storage/v1/object/" + avatarPath (userId), &png, "image/png", accessToken,
+    const auto r = sendBytes ("POST", "/storage/v1/object/" + avatarPath (userId), &image, mimeType, accessToken,
                               "x-upsert: true\r\nCache-Control: max-age=60\r\n");
     if (r.status >= 200 && r.status < 300)
         return {};
@@ -454,33 +456,29 @@ void Account::setAvatarFromFile (const juce::File& imageFile)
         return;
     }
 
-    auto img = juce::ImageFileFormat::loadFrom (imageFile);
-    if (! img.isValid())
+    // still pictures become a 256 px square; GIFs and videos become a strip of 96 px frames
+    juce::String error;
+    auto square = AvatarMedia::load (imageFile, error);
+    if (! square.isValid())
     {
-        status = "That file isn't an image AMETHYST can read (use PNG or JPG).";
+        status = error;
         sendChangeMessage();
         return;
     }
 
-    // centre-crop to a square and shrink to 256 x 256
-    const int side = juce::jmin (img.getWidth(), img.getHeight());
-    auto square = img.getClippedImage ({ (img.getWidth() - side) / 2, (img.getHeight() - side) / 2, side, side })
-                     .rescaled (256, 256, juce::Graphics::highResamplingQuality);
-
-    juce::MemoryOutputStream out;
-    juce::PNGImageFormat png;
-    if (! png.writeImageToStream (square, out))
+    juce::String mime;
+    const auto data = AvatarMedia::encode (square, mime);
+    if (data.isEmpty())
     {
         status = "Couldn't prepare that picture.";
         sendChangeMessage();
         return;
     }
-    juce::MemoryBlock data (out.getData(), out.getDataSize());
 
-    status = "Uploading your picture...";
+    status = AvatarMedia::isAnimated (square) ? "Uploading your animated picture..." : "Uploading your picture...";
     auto apiCopy = api;
     const auto token = accessToken, uid = userId;
-    runAsync<juce::String> ([apiCopy, token, uid, data] { return apiCopy.uploadAvatar (token, uid, data); },
+    runAsync<juce::String> ([apiCopy, token, uid, data, mime] { return apiCopy.uploadAvatar (token, uid, data, mime); },
                             [this, square, data] (const juce::String& err)
     {
         if (err.isNotEmpty())

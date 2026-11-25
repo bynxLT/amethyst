@@ -2,6 +2,7 @@
 #include "PluginWindows.h"
 #include "Presets.h"
 #include "Plugins/Builtins.h"
+#include "FlpImport.h"
 
 namespace UiHelpers
 {
@@ -55,6 +56,7 @@ namespace UiHelpers
         menu.addSectionHeader ("Channel presets - " + track.name);
         menu.addItem (1, "Save channel preset...");
         menu.addItem (2, "Load preset from file...");
+        menu.addItem (4, "Load FL Studio preset (.fst)...");
         menu.addItem (3, "Open presets folder");
 
         if (! presets.isEmpty())
@@ -80,7 +82,17 @@ namespace UiHelpers
             else if (result == 2)
             {
                 c.chooser = std::make_unique<juce::FileChooser> ("Load channel preset", ChannelPresets::getFolder(),
-                                                                 juce::String ("*") + ChannelPresets::fileExtension);
+                                                                 juce::String ("*") + ChannelPresets::fileExtension + ";*.fst");
+                c.chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                                        [ctxPtr, trackPtr, onChanged] (const juce::FileChooser& fc)
+                {
+                    if (fc.getResult().existsAsFile() && ctxPtr->engine.isValidChannel (trackPtr))
+                        loadPreset (*ctxPtr, *trackPtr, fc.getResult(), onChanged);
+                });
+            }
+            else if (result == 4)
+            {
+                c.chooser = std::make_unique<juce::FileChooser> ("Load FL Studio preset (mixer track state or effect preset)", flPresetFolder(), "*.fst");
                 c.chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
                                         [ctxPtr, trackPtr, onChanged] (const juce::FileChooser& fc)
                 {
@@ -121,9 +133,32 @@ namespace UiHelpers
         });
     }
 
+    juce::File flPresetFolder()
+    {
+        const auto docs = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
+        for (auto f : { docs.getChildFile ("Image-Line/FL Studio/Presets/Mixer presets"),
+                        docs.getChildFile ("Image-Line/FL Studio/Presets"),
+                        juce::File::getSpecialLocation (juce::File::userHomeDirectory).getChildFile ("Downloads") })
+            if (f.isDirectory())
+                return f;
+        return docs;
+    }
+
     void loadPreset (AppContext& ctx, Track& track, const juce::File& file, std::function<void()> onChanged)
     {
         ctx.pluginWindows.closeAllFor (track);
+        if (FlpImport::isFlPreset (file))
+        {
+            FlpImport::Report report;
+            auto r = FlpImport::importPreset (ctx.engine, track, file, report);
+            if (onChanged)
+                onChanged();
+            if (r.failed())
+                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Couldn't load FL Studio preset", r.getErrorMessage());
+            else if (ctx.showReport)
+                ctx.showReport ("FL Studio preset - " + file.getFileNameWithoutExtension(), report.toText());
+            return;
+        }
         auto result = ChannelPresets::load (ctx.engine, track, file);
         if (onChanged)
             onChanged();
@@ -131,6 +166,30 @@ namespace UiHelpers
         if (result.failed())
             juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
                                                     "Preset loaded with problems", result.getErrorMessage());
+    }
+
+    //==========================================================================
+    juce::String formatBpm (double bpm)
+    {
+        return std::abs (bpm - std::round (bpm)) < 0.005 ? juce::String (juce::roundToInt (bpm)) : juce::String (bpm, 2).trimCharactersAtEnd ("0");
+    }
+
+    void offerTempo (AudioEngine& engine, double bpm, const juce::String& title, const juce::String& extraText)
+    {
+        auto* box = new juce::AlertWindow (title, (extraText.isNotEmpty() ? extraText + "\n\n" : juce::String())
+                                                      + "Tempo: " + formatBpm (bpm) + " BPM.\nSome beats feel half or double time - pick the one that matches how you count it.",
+                                           juce::MessageBoxIconType::QuestionIcon);
+        box->addButton ("Set " + formatBpm (bpm), 1, juce::KeyPress (juce::KeyPress::returnKey));
+        if (bpm / 2.0 >= 40.0)  box->addButton ("Half: " + formatBpm (bpm / 2.0), 2);
+        if (bpm * 2.0 <= 240.0) box->addButton ("Double: " + formatBpm (bpm * 2.0), 3);
+        box->addButton ("Close", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        auto* eng = &engine;
+        box->enterModalState (true, juce::ModalCallbackFunction::create ([eng, bpm] (int r)
+        {
+            if (r == 1) eng->bpm = bpm;
+            if (r == 2) eng->bpm = bpm / 2.0;
+            if (r == 3) eng->bpm = bpm * 2.0;
+        }), true);
     }
 
     //==========================================================================

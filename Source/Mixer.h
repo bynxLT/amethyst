@@ -84,6 +84,7 @@ public:
     void showSlotMenu (int index, juce::Component& target);
     void dropPlugin (int index, const juce::String& description);
     void dropVst3File (int index, const juce::File&);
+    void loadFlPreset (const juce::File&);   // FL Studio .fst onto this channel
     void loadFirstFree (const juce::PluginDescription&);
 
     void paint (juce::Graphics&) override;
@@ -114,9 +115,13 @@ public:
 
     void paint (juce::Graphics&) override;
     void resized() override;
-    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDown (const juce::MouseEvent& e) override;
 
 private:
+    float holdL = 0.0f, holdR = 0.0f;
+    juce::uint32 holdAtL = 0, holdAtR = 0;
+    juce::Rectangle<int> clipLightArea;
+
     MixerView& owner;
     Track& track;
     const int number;
@@ -124,7 +129,7 @@ private:
     float levelL = 0.0f, levelR = 0.0f;
 
     LedButton armLed { Theme::record };
-    ValueSlider panKnob { "Pan" }, fader { "Volume" };
+    ValueSlider panKnob { "Pan" }, fader { "Volume" }, gainKnob { "Input gain" };
     juce::TextButton muteBtn { "M" }, soloBtn { "S" };
     juce::Rectangle<int> meterArea, nameArea;
 };

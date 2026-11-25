@@ -53,7 +53,7 @@ namespace
 
         void prepareToPlay (double sr, int) override { sampleRate = sr; lastF = -1.0f; env = 0.0f; gain = 1.0f; }
 
-        void processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
+        void process (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
         {
             juce::ScopedNoDenormals noDenormals;
             const int n = buffer.getNumSamples();
@@ -167,7 +167,7 @@ namespace
 
         void prepareToPlay (double sr, int) override { sampleRate = sr; lastTone = -999.0f; hold.fill (0.0f); holdCount = 0; }
 
-        void processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
+        void process (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
         {
             juce::ScopedNoDenormals noDenormals;
             const int n = buffer.getNumSamples();
@@ -314,7 +314,7 @@ namespace
             target[0] = target[1] = 0.0f;
         }
 
-        void processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
+        void process (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
         {
             juce::ScopedNoDenormals noDenormals;
             const int n = buffer.getNumSamples();
@@ -405,7 +405,7 @@ namespace
             phasor = 0.0;
         }
 
-        void processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
+        void process (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
         {
             juce::ScopedNoDenormals noDenormals;
             const int n = buffer.getNumSamples();
@@ -458,6 +458,11 @@ namespace
         { "amethyst.deesser", Builtins::makeDeEsser },   { "amethyst.warmth", Builtins::makeWarmth },
         { "amethyst.doubler", Builtins::makeDoubler },   { "amethyst.shift", Builtins::makeShift },
         { "amethyst.tune", Builtins::makeTune },
+        { "amethyst.tapestop", Builtins::makeTapeStop }, { "amethyst.master", Builtins::makePolish },
+        { "amethyst.rider", Builtins::makeRider },       { "amethyst.denoise", Builtins::makeDenoise },
+        { "amethyst.harmony", Builtins::makeHarmony },   { "amethyst.imager", Builtins::makeImager },
+        { "amethyst.transient", Builtins::makeTransient }, { "amethyst.gate", Builtins::makeGate },
+        { "amethyst.autofilter", Builtins::makeAutoFilter }, { "amethyst.loudness", Builtins::makeLoudness },
     };
 }
 

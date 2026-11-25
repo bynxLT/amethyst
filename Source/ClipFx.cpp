@@ -221,42 +221,110 @@ namespace
 
 double ClipFx::detectTempo (const juce::AudioBuffer<float>& buf, int start, int length, double sr)
 {
-    const int hop = juce::jmax (1, (int) (sr * 0.01)); // 10 ms frames -> 100 frames per second
-    const int frames = length / hop;
-    if (frames < 300) // need a few seconds
+    // 1. Onset strength: log-spectral flux at 200 frames per second (5 ms), up to 60 s of audio.
+    constexpr double fps = 200.0;
+    constexpr int order = 10, N = 1 << order;   // ~21 ms frames at 48 kHz
+    const int hop = juce::jmax (1, (int) std::lround (sr / fps));
+    length = juce::jmin (length, (int) (sr * 60.0));
+    const int frames = (length - N) / hop;
+    if (frames < (int) (fps * 4.0))   // need at least ~4 seconds
         return 0.0;
 
-    std::vector<float> env ((size_t) frames, 0.0f), onset ((size_t) frames, 0.0f);
+    juce::dsp::FFT fft (order);
+    std::vector<float> window ((size_t) N), data ((size_t) (2 * N));
+    for (int i = 0; i < N; ++i) window[(size_t) i] = 0.5f - 0.5f * std::cos (juce::MathConstants<float>::twoPi * i / N);
+    const int bins = juce::jmin (N / 2, (int) (9000.0 * N / sr));   // ignore the top end (hiss, cymbal wash)
+    std::vector<float> prev ((size_t) bins, 0.0f), onset ((size_t) frames, 0.0f);
+    const int nCh = juce::jmin (2, buf.getNumChannels());
     for (int f = 0; f < frames; ++f)
     {
-        double e = 0.0;
-        for (int c = 0; c < buf.getNumChannels(); ++c)
+        std::fill (data.begin(), data.end(), 0.0f);
+        for (int c = 0; c < nCh; ++c)
         {
             const float* d = buf.getReadPointer (c, start + f * hop);
-            for (int i = 0; i < hop; ++i)
-                e += d[i] * d[i];
+            for (int i = 0; i < N; ++i) data[(size_t) i] += d[i] * window[(size_t) i];
         }
-        env[(size_t) f] = (float) std::log1p (e * 100.0);
-        if (f > 0)
-            onset[(size_t) f] = juce::jmax (0.0f, env[(size_t) f] - env[(size_t) f - 1]);
+        fft.performFrequencyOnlyForwardTransform (data.data());
+        float flux = 0.0f;
+        for (int k = 1; k < bins; ++k)
+        {
+            const float m = std::log1p (1000.0f * data[(size_t) k]);
+            flux += juce::jmax (0.0f, m - prev[(size_t) k]);
+            prev[(size_t) k] = m;
+        }
+        onset[(size_t) f] = flux;
+    }
+    // remove the slowly-moving part (loud sections), keep the hits
+    {
+        std::vector<float> smooth ((size_t) frames);
+        const int w = (int) (fps * 0.1);
+        double acc = 0.0;
+        for (int f = 0; f < frames; ++f)
+        {
+            acc += onset[(size_t) f];
+            if (f >= 2 * w) acc -= onset[(size_t) (f - 2 * w)];
+            smooth[(size_t) juce::jmax (0, f - w)] = (float) (acc / juce::jmin (f + 1, 2 * w));
+        }
+        for (int f = 0; f < frames; ++f) onset[(size_t) f] = juce::jmax (0.0f, onset[(size_t) f] - smooth[(size_t) f]);
     }
 
-    // autocorrelation over the 70..180 BPM range, with a gentle preference for 90..140
-    double best = 0.0, bestScore = 0.0;
-    for (int lag = 33; lag <= 86; ++lag)
+    // 2. Autocorrelation of the onset curve (normalised per overlap), read with fractional lags.
+    const int maxLag = juce::jmin (frames / 2, (int) (fps * 60.0 / 50.0 * 4.0) + 2);   // up to 4 beats at 50 BPM
+    std::vector<double> acf ((size_t) maxLag + 2, 0.0);
+    for (int lag = 1; lag <= maxLag + 1; ++lag)
     {
-        double score = 0.0;
-        for (int f = lag; f < frames; ++f)
-            score += onset[(size_t) f] * onset[(size_t) (f - lag)];
-        const double bpm = 6000.0 / lag;
-        score *= 1.0 - 0.15 * std::abs (bpm - 115.0) / 65.0;
-        if (score > bestScore)
-        {
-            bestScore = score;
-            best = bpm;
-        }
+        double s = 0.0;
+        for (int f = lag; f < frames; ++f) s += (double) onset[(size_t) f] * onset[(size_t) (f - lag)];
+        acf[(size_t) lag] = s / (frames - lag);
     }
-    return bestScore > 0.0 ? best : 0.0;
+    auto acfAt = [&] (double lag)
+    {
+        if (lag < 1.0 || lag > maxLag) return 0.0;
+        const int i = (int) lag;
+        const double t = lag - i;
+        return acf[(size_t) i] * (1.0 - t) + acf[(size_t) i + 1] * t;
+    };
+
+    // 3. Coarse: score each tempo by its beat period and its multiples (bars), with a soft
+    //    preference around 120 BPM so half / double-time mistakes are rare.
+    double coarse = 0.0, bestScore = -1.0;
+    for (double bpm = 60.0; bpm <= 200.0; bpm += 0.25)
+    {
+        const double T = fps * 60.0 / bpm;
+        const double s = acfAt (T) + 0.6 * acfAt (2.0 * T) + 0.4 * acfAt (4.0 * T) + 0.25 * acfAt (T * 0.5);
+        const double oct = std::log2 (bpm / 120.0);
+        const double score = s * std::exp (-0.5 * oct * oct / (0.9 * 0.9));
+        if (score > bestScore) { bestScore = score; coarse = bpm; }
+    }
+    if (bestScore <= 0.0)
+        return 0.0;
+
+    // 4. Fine: slide a beat grid (best phase per tempo) across the whole onset curve, 0.01 BPM steps.
+    auto onsetAt = [&] (double pos)
+    {
+        const int i = (int) pos;
+        if (i < 0 || i + 1 >= frames) return 0.0;
+        const double t = pos - i;
+        return onset[(size_t) i] * (1.0 - t) + onset[(size_t) i + 1] * t;
+    };
+    double fine = coarse, fineScore = -1.0;
+    for (double bpm = coarse - 1.5; bpm <= coarse + 1.5; bpm += 0.01)
+    {
+        const double T = fps * 60.0 / bpm;
+        double best = 0.0;
+        for (double phase = 0.0; phase < T; phase += 1.0)
+        {
+            double s = 0.0;
+            for (double p = phase; p < frames; p += T) s += onsetAt (p);
+            best = juce::jmax (best, s);
+        }
+        best /= std::floor (frames / T);
+        if (best > fineScore) { fineScore = best; fine = bpm; }
+    }
+
+    // Most music sits on a whole number: snap when it's that close
+    const double rounded = std::round (fine);
+    return std::abs (fine - rounded) <= 0.12 ? rounded : std::round (fine * 100.0) / 100.0;
 }
 
 std::vector<std::pair<int, int>> ClipFx::findSilences (const juce::AudioBuffer<float>& buf, int start, int length, double sr,
@@ -489,4 +557,107 @@ juce::AudioBuffer<float> ClipFx::render (const juce::AudioBuffer<float>& source,
     }
 
     return b;
+}
+
+//==============================================================================
+juce::String ClipFx::KeyResult::name() const
+{
+    static const char* names[] = { "C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B" };
+    if (tonic < 0 || tonic > 11)
+        return "Unknown";
+    return juce::String (names[tonic]) + (minor ? " minor" : " major");
+}
+
+ClipFx::KeyResult ClipFx::detectKey (const juce::AudioBuffer<float>& buf, int start, int length, double sr)
+{
+    KeyResult result;
+    start = juce::jlimit (0, buf.getNumSamples(), start);
+    length = juce::jlimit (0, buf.getNumSamples() - start, length);
+    if (length < (int) (sr * 2.0) || sr <= 0.0)
+        return result;
+
+    // Mono, decimated to ~11 kHz (pitch classes only need up to a couple of kHz).
+    const int decim = juce::jmax (1, (int) std::lround (sr / 11025.0));
+    const double rate = sr / decim;
+    const int maxSamples = (int) (rate * 180.0);   // the first 3 minutes are plenty
+    std::vector<float> mono;
+    mono.reserve ((size_t) juce::jmin (maxSamples, length / decim + 1));
+    for (int i = 0; i + decim <= length && (int) mono.size() < maxSamples; i += decim)
+    {
+        float sum = 0.0f;
+        for (int k = 0; k < decim; ++k)
+            for (int c = 0; c < buf.getNumChannels(); ++c)
+                sum += buf.getSample (c, start + i + k);
+        mono.push_back (sum / (float) (decim * juce::jmax (1, buf.getNumChannels())));
+    }
+
+    constexpr int order = 12, fftSize = 1 << order, hop = fftSize / 2;
+    if ((int) mono.size() < fftSize)
+        return result;
+
+    juce::dsp::FFT fft (order);
+    juce::dsp::WindowingFunction<float> window ((size_t) fftSize, juce::dsp::WindowingFunction<float>::hann);
+    std::vector<float> frame ((size_t) fftSize * 2);
+    std::array<double, 12> chroma {};
+
+    // Map every FFT bin in 55 Hz .. 2 kHz to a pitch class once.
+    std::vector<int> binClass ((size_t) fftSize / 2, -1);
+    for (int b = 1; b < fftSize / 2; ++b)
+    {
+        const double f = b * rate / fftSize;
+        if (f < 55.0 || f > 2000.0) continue;
+        const int midi = (int) std::lround (69.0 + 12.0 * std::log2 (f / 440.0));
+        binClass[(size_t) b] = ((midi % 12) + 12) % 12;
+    }
+
+    for (size_t pos = 0; pos + fftSize <= mono.size(); pos += hop)
+    {
+        std::fill (frame.begin(), frame.end(), 0.0f);
+        std::copy (mono.begin() + (long) pos, mono.begin() + (long) pos + fftSize, frame.begin());
+        window.multiplyWithWindowingTable (frame.data(), (size_t) fftSize);
+        fft.performFrequencyOnlyForwardTransform (frame.data());
+
+        std::array<double, 12> fc {};
+        double total = 0.0;
+        for (int b = 1; b < fftSize / 2; ++b)
+            if (binClass[(size_t) b] >= 0)
+            {
+                const double m = std::sqrt ((double) frame[(size_t) b]);   // soften loud bass notes
+                fc[(size_t) binClass[(size_t) b]] += m;
+                total += m;
+            }
+        if (total > 1.0e-6)
+            for (int k = 0; k < 12; ++k)
+                chroma[(size_t) k] += fc[(size_t) k] / total;   // each frame counts equally
+    }
+
+    static constexpr double major[12] = { 6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88 };
+    static constexpr double minor[12] = { 6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17 };
+    auto correlate = [&chroma] (const double* profile, int tonic)
+    {
+        double mx = 0, my = 0;
+        for (int i = 0; i < 12; ++i) { mx += chroma[(size_t) ((i + tonic) % 12)]; my += profile[i]; }
+        mx /= 12; my /= 12;
+        double sxy = 0, sxx = 0, syy = 0;
+        for (int i = 0; i < 12; ++i)
+        {
+            const double x = chroma[(size_t) ((i + tonic) % 12)] - mx, y = profile[i] - my;
+            sxy += x * y; sxx += x * x; syy += y * y;
+        }
+        return sxx > 0 && syy > 0 ? sxy / std::sqrt (sxx * syy) : 0.0;
+    };
+
+    double best = -2.0, second = -2.0;
+    for (int t = 0; t < 12; ++t)
+        for (int m = 0; m < 2; ++m)
+        {
+            const double r = correlate (m == 0 ? major : minor, t);
+            if (r > best) { second = best; best = r; result.tonic = t; result.minor = m == 1; }
+            else if (r > second) second = r;
+        }
+
+    result.confidence = (float) juce::jlimit (0.0, 1.0, (best - second) * 5.0 + juce::jmax (0.0, best - 0.5));
+    if (best < 0.3)
+        result.tonic = -1;
+    return result;
 }

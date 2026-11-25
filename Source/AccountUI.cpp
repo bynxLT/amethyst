@@ -1,4 +1,5 @@
 #include "AccountUI.h"
+#include "AvatarMedia.h"
 
 namespace
 {
@@ -49,7 +50,7 @@ void drawAvatar (juce::Graphics& g, juce::Rectangle<float> area, const juce::Ima
         clip.addEllipse (circle);
         g.reduceClipRegion (clip);
         g.setOpacity (1.0f); // images use the current colour's alpha - the glow above left it at 35%
-        g.drawImage (picture, circle, juce::RectanglePlacement::fillDestination);
+        g.drawImage (AvatarMedia::currentFrame (picture), circle, juce::RectanglePlacement::fillDestination);
     }
     else
     {
@@ -93,9 +94,55 @@ void AccountBadge::paintButton (juce::Graphics& g, bool over, bool down)
         drawAvatar (g, content.removeFromLeft (content.getHeight()), pro ? avatar : juce::Image(), email, pro);
         content.removeFromLeft (6.0f);
     }
+    // plan glyph: a gem for Pro, a crown for Ultra Pro
+    if (tier >= 1)
+    {
+        auto glyph = content.removeFromLeft (14.0f).withSizeKeepingCentre (12.0f, 12.0f);
+        content.removeFromLeft (4.0f);
+        juce::Path p;
+        if (tier >= 2)
+        {
+            p.startNewSubPath (glyph.getX(), glyph.getBottom());
+            p.lineTo (glyph.getX(), glyph.getY() + glyph.getHeight() * 0.25f);
+            p.lineTo (glyph.getX() + glyph.getWidth() * 0.3f, glyph.getCentreY());
+            p.lineTo (glyph.getCentreX(), glyph.getY());
+            p.lineTo (glyph.getRight() - glyph.getWidth() * 0.3f, glyph.getCentreY());
+            p.lineTo (glyph.getRight(), glyph.getY() + glyph.getHeight() * 0.25f);
+            p.lineTo (glyph.getRight(), glyph.getBottom());
+            p.closeSubPath();
+        }
+        else
+        {
+            p.startNewSubPath (glyph.getCentreX(), glyph.getY());
+            p.lineTo (glyph.getRight(), glyph.getY() + glyph.getHeight() * 0.38f);
+            p.lineTo (glyph.getCentreX(), glyph.getBottom());
+            p.lineTo (glyph.getX(), glyph.getY() + glyph.getHeight() * 0.38f);
+            p.closeSubPath();
+        }
+        g.setColour (juce::Colours::white.withAlpha (0.95f));
+        g.fillPath (p);
+    }
     g.setColour (pro ? juce::Colours::white : Theme::text);
     g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
     g.drawText (text, content.toNearestInt(), showAvatar ? juce::Justification::centredLeft : juce::Justification::centred, true);
+
+    // Ultra Pro: a slow light sweep across the badge
+    if (tier >= 2)
+    {
+        juce::Graphics::ScopedSaveState ss (g);
+        juce::Path clip;
+        clip.addRoundedRectangle (r, rad);
+        g.reduceClipRegion (clip);
+        const float x = r.getX() + r.getWidth() * shimmer;
+        g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (0.0f), x - 18.0f, r.getY(),
+                                                 juce::Colours::white.withAlpha (0.0f), x + 18.0f, r.getY(), false));
+        juce::ColourGradient sweep (juce::Colours::white.withAlpha (0.0f), x - 18.0f, r.getY(), juce::Colours::white.withAlpha (0.0f), x + 18.0f, r.getY(), false);
+        sweep.addColour (0.5, juce::Colours::white.withAlpha (0.28f));
+        g.setGradientFill (sweep);
+        g.fillRect (r);
+        g.setColour (Theme::accent2.withAlpha (0.7f));
+        g.drawRoundedRectangle (r.reduced (0.5f), rad, 1.3f);
+    }
 }
 
 //==============================================================================
@@ -122,12 +169,12 @@ AccountPanel::AccountPanel (Account& a) : account (a)
                                                 "Subscriptions are coming soon!\n\nOnce they launch you'll be able to upgrade right here.");
     };
 
-    changePicBtn.setTooltip ("Pick a PNG or JPG - it's cropped to a circle (Pro)");
+    changePicBtn.setTooltip ("Pick a picture, a GIF or a short MP4 - it's cropped to a circle and animated ones loop (Pro)");
     changePicBtn.onClick = [this]
     {
         chooser = std::make_unique<juce::FileChooser> ("Choose a profile picture",
                                                        juce::File::getSpecialLocation (juce::File::userPicturesDirectory),
-                                                       "*.png;*.jpg;*.jpeg");
+                                                       "*.png;*.jpg;*.jpeg;*.gif;*.mp4;*.mov;*.m4v");
         juce::Component::SafePointer<AccountPanel> safe (this);
         chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
                               [safe] (const juce::FileChooser& fc)
@@ -143,13 +190,21 @@ AccountPanel::AccountPanel (Account& a) : account (a)
         addChildComponent (c);
 
     account.addChangeListener (this);
+    startTimerHz (25);   // animated profile pictures
     setSize (440, 420);
     refresh();
 }
 
 AccountPanel::~AccountPanel()
 {
+    stopTimer();
     account.removeChangeListener (this);
+}
+
+void AccountPanel::timerCallback()
+{
+    if (AvatarMedia::isAnimated (account.getAvatar()))
+        repaint (avatarArea.expanded (4));
 }
 
 void AccountPanel::show (Account& account, juce::Component* centreAround)
@@ -199,7 +254,7 @@ void AccountPanel::paint (juce::Graphics& g)
     head.removeFromLeft (10);
     g.setColour (Theme::text);
     g.setFont (juce::FontOptions (21.0f, juce::Font::bold));
-    g.drawText ("AMETHYST", head.removeFromTop (28), juce::Justification::bottomLeft);
+    g.drawText ("AMETHYST 2026", head.removeFromTop (28), juce::Justification::bottomLeft);
     g.setColour (Theme::accent);
     g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
     g.drawText ("ACCOUNT", head, juce::Justification::topLeft);
@@ -272,8 +327,10 @@ void AccountPanel::paint (juce::Graphics& g)
     // status line
     g.setColour (account.isBusy() ? Theme::accent2 : Theme::textDim);
     g.setFont (juce::FontOptions (12.5f));
-    g.drawFittedText (account.getStatus(), getLocalBounds().reduced (30, 0).removeFromBottom (58).removeFromTop (34),
-                      juce::Justification::centredLeft, 2);
+    // its own line just above the bottom buttons (they sit in the last 36 px above the 22 px margin)
+    auto statusArea = getLocalBounds().reduced (30, 22);
+    statusArea.removeFromBottom (36 + 8);
+    g.drawFittedText (account.getStatus(), statusArea.removeFromBottom (32), juce::Justification::centredLeft, 2);
 }
 
 void AccountPanel::resized()

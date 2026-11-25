@@ -295,7 +295,7 @@ void SlotRow::itemDropped (const SourceDetails& details)
 bool SlotRow::isInterestedInFileDrag (const juce::StringArray& files)
 {
     for (auto& f : files)
-        if (f.endsWithIgnoreCase (".vst3"))
+        if (f.endsWithIgnoreCase (".vst3") || f.endsWithIgnoreCase (".fst"))
             return owner.getTrack() != nullptr;
     return false;
 }
@@ -308,6 +308,11 @@ void SlotRow::filesDropped (const juce::StringArray& files, int, int)
         if (f.endsWithIgnoreCase (".vst3"))
         {
             owner.dropVst3File (index, juce::File (f));
+            break;
+        }
+        if (f.endsWithIgnoreCase (".fst"))
+        {
+            owner.loadFlPreset (juce::File (f));
             break;
         }
     }
@@ -503,6 +508,13 @@ void SlotPanel::dropPlugin (int index, const juce::String& description)
     refresh();
 }
 
+void SlotPanel::loadFlPreset (const juce::File& file)
+{
+    if (track == nullptr || ! ctx.engine.isValidChannel (track))
+        return;
+    UiHelpers::loadPreset (ctx, *track, file, [this] { refresh(); if (onChannelChanged) onChannelChanged(); });
+}
+
 void SlotPanel::dropVst3File (int index, const juce::File& file)
 {
     if (track == nullptr)
@@ -542,6 +554,16 @@ MixerStrip::MixerStrip (MixerView& o, Track& t, int num) : owner (o), track (t),
     armLed.setVisible (! track.isMaster);
     addChildComponent (armLed);
 
+    gainKnob.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    gainKnob.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    gainKnob.setRange (-12.0, 24.0, 0.1);
+    gainKnob.setDoubleClickReturnValue (true, 0.0);
+    gainKnob.setTextValueSuffix (" dB");
+    gainKnob.setTooltip ("Input gain: makes your mic louder when recording and monitoring (double-click for 0 dB)");
+    gainKnob.onValueChange = [this] { track.inputGainDb = (float) gainKnob.getValue(); };
+    if (! track.isMaster)
+        addAndMakeVisible (gainKnob);
+
     panKnob.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     panKnob.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
     panKnob.setRange (-1.0, 1.0, 0.01);
@@ -552,8 +574,8 @@ MixerStrip::MixerStrip (MixerView& o, Track& t, int num) : owner (o), track (t),
 
     fader.setSliderStyle (juce::Slider::LinearVertical);
     fader.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
-    fader.setRange (-60.0, 12.0, 0.1);
-    fader.setSkewFactorFromMidPoint (-12.0);
+    fader.setRange (-60.0, 24.0, 0.1);
+    fader.setSkewFactorFromMidPoint (-6.0);
     fader.setDoubleClickReturnValue (true, 0.0);
     fader.setTooltip ("Volume (double-click for 0 dB)");
     fader.onValueChange = [this] { track.volumeDb = (float) fader.getValue(); };
@@ -584,9 +606,17 @@ void MixerStrip::tick()
 {
     levelL = juce::jmax (track.meterL.exchange (0.0f), levelL * 0.85f);
     levelR = juce::jmax (track.meterR.exchange (0.0f), levelR * 0.85f);
+    // peak hold: the highest level stays marked for 1.5 s, then falls
+    const auto nowMs = juce::Time::getMillisecondCounter();
+    for (auto [lvl, hold, at] : { std::tuple<float, float*, juce::uint32*> { levelL, &holdL, &holdAtL }, std::tuple<float, float*, juce::uint32*> { levelR, &holdR, &holdAtR } })
+    {
+        if (lvl >= *hold) { *hold = lvl; *at = nowMs; }
+        else if (nowMs - *at > 1500) *hold = juce::jmax (lvl, *hold * 0.92f);
+    }
 
     if (! fader.isMouseButtonDown())   fader.setValue (track.volumeDb.load(), juce::dontSendNotification);
     if (! panKnob.isMouseButtonDown()) panKnob.setValue (track.pan.load(), juce::dontSendNotification);
+    if (! gainKnob.isMouseButtonDown()) gainKnob.setValue (track.inputGainDb.load(), juce::dontSendNotification);
     muteBtn.setToggleState (track.mute.load(), juce::dontSendNotification);
     soloBtn.setToggleState (track.solo.load(), juce::dontSendNotification);
     armLed.setToggleState (track.armed.load(), juce::dontSendNotification);
@@ -605,10 +635,35 @@ void MixerStrip::paint (juce::Graphics& g)
         g.fillRoundedRectangle (card, 12.0f);
     }
 
-    // number
+    // track colour along the top of the card
+    if (! track.colour.isTransparent())
+    {
+        g.setColour (track.colour.withAlpha (0.9f));
+        g.fillRoundedRectangle (card.withHeight (4.0f).reduced (10.0f, 0.0f).translated (0.0f, 2.0f), 2.0f);
+    }
+
+    // number, with a red clip light (click it to clear)
+    auto numberRow = r.removeFromTop (24);
     g.setColour (track.isMaster ? Theme::accent2 : Theme::text.withAlpha (0.75f));
     g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
-    g.drawText (track.isMaster ? juce::String ("M") : juce::String (number), r.removeFromTop (24), juce::Justification::centred);
+    g.drawText (track.isMaster ? juce::String ("M") : juce::String (number), numberRow, juce::Justification::centred);
+    clipLightArea = numberRow.removeFromRight (18).withSizeKeepingCentre (10, 10);
+    g.setColour (track.clipped.load() ? Theme::record : Theme::panelLight);
+    g.fillEllipse (clipLightArea.toFloat());
+
+    // small badges: low cut, polarity, plug-in latency
+    {
+        juce::StringArray badges;
+        if (track.lowCutHz.load() > 1.0f) badges.add ("LC" + juce::String ((int) track.lowCutHz.load()));
+        if (track.phaseInvert.load()) badges.add (juce::String (juce::CharPointer_UTF8 ("Ã")));
+        if (track.latencySamples.load() > 0) badges.add (juce::String (track.latencySamples.load() / 48) + "ms");
+        if (! badges.isEmpty())
+        {
+            g.setFont (juce::FontOptions (9.0f, juce::Font::bold));
+            g.setColour (Theme::accent.brighter (0.3f));
+            g.drawText (badges.joinIntoString (" "), nameArea.withHeight (14).translated (0, 3), juce::Justification::centred, true);
+        }
+    }
 
     // vertical name
     Glass::well (g, nameArea.toFloat(), 7.0f);
@@ -624,9 +679,22 @@ void MixerStrip::paint (juce::Graphics& g)
 
     // meters
     auto m = meterArea.toFloat();
-    drawMeter (g, m.removeFromLeft (m.getWidth() / 2.0f - 1.0f), levelL);
+    auto mL = m.removeFromLeft (m.getWidth() / 2.0f - 1.0f);
+    drawMeter (g, mL, levelL);
     m.removeFromLeft (2.0f);
     drawMeter (g, m, levelR);
+    // peak-hold ticks (same dB scale as the meter: -60..+6)
+    auto holdY = [] (juce::Rectangle<float> area, float lvl)
+    {
+        const float db = juce::jlimit (-60.0f, 6.0f, juce::Decibels::gainToDecibels (lvl, -60.0f));
+        return area.getBottom() - (db + 60.0f) / 66.0f * area.getHeight();
+    };
+    for (auto [area, hold] : { std::pair<juce::Rectangle<float>, float> { mL, holdL }, std::pair<juce::Rectangle<float>, float> { m, holdR } })
+        if (hold > 0.001f)
+        {
+            g.setColour (hold > 1.0f ? Theme::record : Theme::text.withAlpha (0.85f));
+            g.fillRect (area.getX(), holdY (area, hold) - 1.0f, area.getWidth(), 2.0f);
+        }
 
     // dB readout
     const float db = track.volumeDb.load();
@@ -650,7 +718,16 @@ void MixerStrip::resized()
     r.removeFromTop (22);
     nameArea = r.removeFromTop (juce::jlimit (60, 150, getHeight() / 4));
     r.removeFromTop (4);
-    armLed.setBounds (r.removeFromTop (20).withSizeKeepingCentre (18, 18));
+    {
+        auto row = r.removeFromTop (34);
+        if (track.isMaster)
+            armLed.setBounds (row.withSizeKeepingCentre (18, 18));
+        else
+        {
+            armLed.setBounds (row.removeFromLeft (row.getWidth() / 2).withSizeKeepingCentre (18, 18));
+            gainKnob.setBounds (row.withSizeKeepingCentre (32, 32));
+        }
+    }
     panKnob.setBounds (r.removeFromTop (40).withSizeKeepingCentre (38, 38));
     r.removeFromTop (4);
 
@@ -671,8 +748,14 @@ void MixerStrip::resized()
     fader.setBounds (r);
 }
 
-void MixerStrip::mouseDown (const juce::MouseEvent&)
+void MixerStrip::mouseDown (const juce::MouseEvent& e)
 {
+    if (clipLightArea.expanded (4).contains (e.getPosition()))
+    {
+        track.clipped = false;
+        holdL = holdR = 0.0f;
+        repaint();
+    }
     owner.select (&track);
 }
 
@@ -704,7 +787,7 @@ void MixerView::rebuild()
     for (auto* t : ctx.engine.getTracks())
     {
         ++n; // keep track numbers matching the track list
-        if (t->playThrough == nullptr) // take lanes have no channel of their own
+        if (t->playThrough == nullptr && ! t->isAutomation()) // take lanes and automation clips have no channel of their own
             stripHolder.addAndMakeVisible (strips.add (new MixerStrip (*this, *t, n - 1)));
     }
 

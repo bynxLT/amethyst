@@ -8,6 +8,18 @@ class ValueSlider : public juce::Slider
 public:
     using juce::Slider::Slider;
 
+    // Set by plug-in editors: which parameter this knob controls, so its menu can offer automation.
+    juce::AudioProcessor* automationProcessor = nullptr;
+    int automationParamIndex = -1;
+
+    // Installed by the main window. Actions: 1 create clip, 2 edit (show) clip, 3 init song with this position, 4 delete clip.
+    struct AutomationActions
+    {
+        std::function<bool (juce::AudioProcessor&, int)> hasClip;
+        std::function<void (juce::AudioProcessor&, int, int action)> perform;
+    };
+    static AutomationActions& automationActions() { static AutomationActions a; return a; }
+
     void mouseDown (const juce::MouseEvent& e) override
     {
         if (! e.mods.isPopupMenu())
@@ -17,11 +29,25 @@ public:
         }
 
         juce::PopupMenu m;
-        m.addSectionHeader (getTextFromValue (getValue()));
+        m.addSectionHeader ((getName().isNotEmpty() ? getName() + ":  " : juce::String()) + getTextFromValue (getValue()));
+
+        auto& acts = automationActions();
+        if (automationProcessor != nullptr && automationParamIndex >= 0 && acts.perform != nullptr)
+        {
+            const bool has = acts.hasClip != nullptr && acts.hasClip (*automationProcessor, automationParamIndex);
+            m.addSectionHeader ("Automation");
+            m.addItem (10, "Create automation clip", ! has);
+            m.addItem (11, "Edit automation clip", has);
+            m.addItem (12, "Init song with this position", has);
+            m.addItem (13, "Delete automation clip", has);
+        }
+
+        m.addSectionHeader ("Value");
         m.addItem (1, "Reset", isDoubleClickReturnEnabled());
         m.addItem (2, "Copy value");
         m.addItem (3, "Paste value", clipboard().has_value());
         m.addItem (4, "Type in value...");
+        m.addItem (5, "Randomize");
 
         juce::Component::SafePointer<ValueSlider> safe (this);
         m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this), [safe] (int r)
@@ -33,6 +59,9 @@ public:
             else if (r == 2) clipboard() = s.getValue();
             else if (r == 3 && clipboard().has_value()) s.setValue (juce::jlimit (s.getMinimum(), s.getMaximum(), *clipboard()), juce::sendNotificationSync);
             else if (r == 4) s.showTypeIn();
+            else if (r == 5) s.setValue (s.proportionOfLengthToValue (juce::Random::getSystemRandom().nextDouble()), juce::sendNotificationSync);
+            else if (r >= 10 && r <= 13 && s.automationProcessor != nullptr && automationActions().perform != nullptr)
+                automationActions().perform (*s.automationProcessor, s.automationParamIndex, r - 9);
         });
     }
 
@@ -103,7 +132,9 @@ public:
 class IconButton : public juce::Button
 {
 public:
-    enum class Icon { ReturnToStart, Stop, Play, Pause, Record, Metronome, Folder, Reveal, Trash };
+    enum class Icon { ReturnToStart, Stop, Play, Pause, Record, Metronome, Folder, Reveal, Trash, CountIn, Punch, Gear };
+
+    void setBadge (const juce::String& b) { if (badge != b) { badge = b; repaint(); } }
 
     explicit IconButton (Icon i, juce::Colour onColour = Theme::accent) : juce::Button ({}), icon (i), glow (onColour) {}
 
@@ -142,6 +173,16 @@ public:
             iconColour = iconColour.withAlpha (0.3f);
         g.setColour (iconColour);
         drawIcon (g, ic);
+
+        if (badge.isNotEmpty())
+        {
+            auto chip = juce::Rectangle<float> (14.0f, 14.0f).withCentre ({ r.getRight() - 6.0f, r.getY() + 6.0f });
+            g.setColour (glow);
+            g.fillEllipse (chip);
+            g.setColour (juce::Colours::white);
+            g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+            g.drawText (badge, chip.toNearestInt(), juce::Justification::centred);
+        }
     }
 
 private:
@@ -189,6 +230,43 @@ private:
                 g.drawEllipse (r.reduced (r.getWidth() * 0.1f, r.getHeight() * 0.25f), 1.6f);
                 g.fillEllipse (r.withSizeKeepingCentre (r.getWidth() * 0.28f, r.getWidth() * 0.28f));
                 break;
+            case Icon::CountIn:   // four beats, the first one bigger
+            {
+                const float dot = r.getWidth() * 0.16f;
+                for (int k = 0; k < 4; ++k)
+                {
+                    const float d = k == 0 ? dot * 1.5f : dot;
+                    g.fillEllipse (juce::Rectangle<float> (d, d).withCentre ({ r.getX() + r.getWidth() * (0.12f + 0.25f * (float) k), r.getCentreY() }));
+                }
+                break;
+            }
+            case Icon::Punch:     // [ o ]  a region with a record dot inside
+            {
+                const float w = r.getWidth();
+                p.startNewSubPath (r.getX() + w * 0.22f, r.getY());
+                p.lineTo (r.getX(), r.getY()); p.lineTo (r.getX(), r.getBottom()); p.lineTo (r.getX() + w * 0.22f, r.getBottom());
+                p.startNewSubPath (r.getRight() - w * 0.22f, r.getY());
+                p.lineTo (r.getRight(), r.getY()); p.lineTo (r.getRight(), r.getBottom()); p.lineTo (r.getRight() - w * 0.22f, r.getBottom());
+                g.strokePath (p, juce::PathStrokeType (1.6f, juce::PathStrokeType::mitered, juce::PathStrokeType::square));
+                g.fillEllipse (r.withSizeKeepingCentre (w * 0.38f, w * 0.38f));
+                break;
+            }
+            case Icon::Gear:
+            {
+                const auto c = r.getCentre();
+                const float ro = r.getWidth() * 0.5f, ri = r.getWidth() * 0.36f;
+                for (int k = 0; k < 8; ++k)
+                {
+                    const float a0 = (float) k * juce::MathConstants<float>::twoPi / 8.0f;
+                    p.addCentredArc (c.x, c.y, ro, ro, 0.0f, a0 - 0.22f, a0 + 0.22f, k == 0);
+                    p.addCentredArc (c.x, c.y, ri, ri, 0.0f, a0 + 0.36f, a0 + 0.56f, false);
+                }
+                p.closeSubPath();
+                g.fillPath (p);
+                g.setColour (Theme::background);
+                g.fillEllipse (r.withSizeKeepingCentre (r.getWidth() * 0.32f, r.getWidth() * 0.32f));
+                break;
+            }
             case Icon::Trash:
                 g.fillRoundedRectangle (r.getX() + r.getWidth() * 0.15f, r.getY() + r.getHeight() * 0.25f, r.getWidth() * 0.7f, r.getHeight() * 0.75f, 2.0f);
                 g.fillRoundedRectangle (r.getX(), r.getY() + r.getHeight() * 0.06f, r.getWidth(), r.getHeight() * 0.12f, 1.0f);
@@ -198,6 +276,7 @@ private:
 
     Icon icon;
     juce::Colour glow;
+    juce::String badge;
 };
 
 // Magnet (snap) button: horseshoe icon + current snap size; lit when snapping is on.
@@ -249,6 +328,7 @@ private:
 inline void drawLogoMark (juce::Graphics& g, juce::Rectangle<float> r)
 {
     const float s = juce::jmin (r.getWidth(), r.getHeight());
+    const float k = juce::jmax (1.0f, s / 36.0f);   // stroke scale: 1 at toolbar size
     const auto b = juce::Rectangle<float> (s, s).withCentre (r.getCentre());
 
     juce::Path gem;
@@ -259,11 +339,11 @@ inline void drawLogoMark (juce::Graphics& g, juce::Rectangle<float> r)
     gem.closeSubPath();
 
     g.setColour (Theme::accent.withAlpha (0.25f));
-    g.strokePath (gem, juce::PathStrokeType (5.0f));
+    g.strokePath (gem, juce::PathStrokeType (5.0f * k));
     g.setGradientFill (juce::ColourGradient (Theme::accent2, b.getX(), b.getY(), juce::Colour (0xff5a3fd8), b.getRight(), b.getBottom(), false));
     g.fillPath (gem);
     g.setColour (juce::Colours::white.withAlpha (0.35f));
-    g.strokePath (gem, juce::PathStrokeType (1.0f));
+    g.strokePath (gem, juce::PathStrokeType (1.0f * k));
 
     juce::Path wave;
     const float y0 = b.getY() + s * 0.45f;
@@ -276,5 +356,24 @@ inline void drawLogoMark (juce::Graphics& g, juce::Rectangle<float> r)
     }
     wave.lineTo (b.getRight() - s * 0.2f, y0);
     g.setColour (juce::Colours::white.withAlpha (0.95f));
-    g.strokePath (wave, juce::PathStrokeType (1.6f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    g.strokePath (wave, juce::PathStrokeType (1.6f * k, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+}
+
+// App icon: the gem on a rounded dark-purple glass tile.
+inline juce::Image renderAppIcon (int size)
+{
+    juce::Image img (juce::Image::ARGB, size, size, true);
+    juce::Graphics g (img);
+    const auto r = juce::Rectangle<float> ((float) size, (float) size).reduced ((float) size * 0.04f);
+    const float corner = (float) size * 0.22f;
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff2a1550), r.getX(), r.getY(), juce::Colour (0xff0b0616), r.getRight(), r.getBottom(), false));
+    g.fillRoundedRectangle (r, corner);
+    juce::ColourGradient glow (juce::Colour (0xff9b5cff).withAlpha (0.45f), r.getCentreX(), r.getCentreY(),
+                               juce::Colour (0xff9b5cff).withAlpha (0.0f), r.getRight(), r.getBottom(), true);
+    g.setGradientFill (glow);
+    g.fillRoundedRectangle (r, corner);
+    g.setColour (juce::Colours::white.withAlpha (0.18f));
+    g.drawRoundedRectangle (r.reduced ((float) size * 0.01f), corner, juce::jmax (1.0f, (float) size * 0.012f));
+    drawLogoMark (g, r.reduced ((float) size * 0.17f));
+    return img;
 }

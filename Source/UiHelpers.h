@@ -45,7 +45,12 @@ namespace UiHelpers
     // Channel preset menu: save / load / browse. onChanged runs after a preset is loaded.
     void showPresetMenu (AppContext&, Track&, juce::Component& target, std::function<void()> onChanged);
     void savePresetAs (AppContext&, Track&);
-    void loadPreset (AppContext&, Track&, const juce::File&, std::function<void()> onChanged);
+    void loadPreset (AppContext&, Track&, const juce::File&, std::function<void()> onChanged);   // also takes FL .fst presets
+    juce::File flPresetFolder();   // where FL Studio keeps the user's presets (or Downloads)
+
+    // "Detected tempo" dialog: sets the exact tempo, or its half / double (beats can be heard either way).
+    void offerTempo (AudioEngine&, double bpm, const juce::String& title, const juce::String& extraText = {});
+    juce::String formatBpm (double bpm);   // "140" or "87.5"
 
     // Pops up the scanned plug-in list; calls back with the chosen one.
     void choosePlugin (AppContext&, juce::Component& target, std::function<void (const juce::PluginDescription&)> onChosen);

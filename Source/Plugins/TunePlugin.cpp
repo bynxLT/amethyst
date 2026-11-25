@@ -111,7 +111,7 @@ namespace
             lastThroat = -1;
         }
 
-        void processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
+        void process (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
         {
             juce::ScopedNoDenormals noDenormals;
             if (getBool ("bypass"))
