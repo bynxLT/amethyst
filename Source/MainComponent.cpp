@@ -262,6 +262,8 @@ MainComponent::MainComponent()
             s->onDone = [safe] { if (safe != nullptr) safe->splash = nullptr; };
             splash = std::move (s);
             addAndMakeVisible (*splash);
+            splash->setBounds (getLocalBounds());   // the window already has its size by now (resized() ran earlier)
+            splash->toFront (false);
         }
         if (! recoveryOffered && ! isTestInstance() && appProperties.getUserSettings()->getBoolValue ("showWelcome", true))
         {
